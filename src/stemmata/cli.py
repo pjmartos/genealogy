@@ -19,9 +19,11 @@ from stemmata.errors import (
     EXIT_USAGE,
     GenericError,
     PromptCliError,
+    ReferenceError_,
     UsageError,
 )
 from stemmata.interp import Layer, interpolate
+from stemmata.manifest import is_scoped_name, is_semver
 from stemmata.merge import merge_namespaces
 from stemmata.npmrc import load_npmrc
 from stemmata.prompt_doc import RESERVED_KEYS
@@ -83,6 +85,15 @@ def _build_parser() -> argparse.ArgumentParser:
     validate_cmd.add_argument("--http-timeout", default="30s")
     validate_cmd.add_argument("--timeout", default="5m")
 
+    describe_cmd = subs.add_parser("describe")
+    describe_cmd.add_argument("target", nargs="?")
+    describe_cmd.add_argument("--max-prompts", type=int, default=1000)
+    describe_cmd.add_argument("--max-depth", type=int, default=50)
+    describe_cmd.add_argument("--max-download-size", type=int, default=64 * 1024 * 1024)
+    describe_cmd.add_argument("--max-total-size", type=int, default=512 * 1024 * 1024)
+    describe_cmd.add_argument("--http-timeout", default="30s")
+    describe_cmd.add_argument("--timeout", default="5m")
+
     publish_cmd = subs.add_parser("publish")
     publish_cmd.add_argument("path", nargs="?", default=".")
     publish_cmd.add_argument("--dry-run", action="store_true", default=False)
@@ -98,7 +109,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _deterministic_yaml_dump(data: Any) -> str:
+def _deterministic_yaml_dump(data: Any, *, explicit_start: bool = False) -> str:
     class _Dumper(yaml.SafeDumper):
         pass
 
@@ -119,7 +130,65 @@ def _deterministic_yaml_dump(data: Any) -> str:
         sort_keys=False,
         allow_unicode=True,
         width=1024,
+        explicit_start=explicit_start,
     )
+
+
+def _deterministic_yaml_dump_all(docs: list[Any]) -> str:
+    return "".join(_deterministic_yaml_dump(d, explicit_start=True) for d in docs)
+
+
+def _parse_package_coord(target: str) -> tuple[str, str, str | None]:
+    if not target.startswith("@") or "@" not in target[1:]:
+        raise UsageError(
+            f"describe target must be '<package>@<version>' or '<package>@<version>#<prompt_id>', got {target!r}",
+            argument="target",
+            reason="invalid_coord",
+        )
+    pkg, _, rest = target[1:].partition("@")
+    pkg = "@" + pkg
+    if "#" in rest:
+        version, _, prompt_id = rest.partition("#")
+    else:
+        version, prompt_id = rest, None
+    if not is_scoped_name(pkg):
+        raise UsageError(
+            f"describe target package {pkg!r} must match '@<scope>/<name>'",
+            argument="target",
+            reason="invalid_package",
+        )
+    if not is_semver(version):
+        raise UsageError(
+            f"describe target version {version!r} must be strict SemVer",
+            argument="target",
+            reason="invalid_version",
+        )
+    if prompt_id is not None and not prompt_id:
+        raise UsageError(
+            "describe target has empty prompt id after '#'",
+            argument="target",
+            reason="empty_prompt_id",
+        )
+    return pkg, version, prompt_id
+
+
+def _resolve_coord(pkg: str, version: str, prompt_id: str, session: Session) -> tuple[str, Any, list[dict[str, Any]], str]:
+    session.version_overrides = {}
+    target = f"{pkg}@{version}#{prompt_id}"
+    graph = resolve_graph(target, session)
+    order = layer_order(graph)
+    layers_data = [graph.nodes[nid].doc.namespace for nid in order]
+    provenance = [(nid.canonical, graph.nodes[nid].file) for nid in order]
+    merged = merge_namespaces(layers_data, provenance=provenance)
+    layers = [Layer(canonical_id=nid.canonical, data=graph.nodes[nid].doc.namespace) for nid in order]
+    root_file = graph.nodes[graph.root_id].file
+    resolved = interpolate(merged, layers, root_file=root_file)
+    ancestors_payload = [
+        {"canonical_id": nid.canonical, "distance": graph.distances[nid]}
+        for nid in order
+        if nid != graph.root_id
+    ]
+    return graph.root_id.canonical, resolved, ancestors_payload, root_file
 
 
 def _run_resolve(args: argparse.Namespace, stdout, stderr) -> int:
@@ -181,6 +250,76 @@ def _run_resolve(args: argparse.Namespace, stdout, stderr) -> int:
         "ancestors": ancestor_payload,
     }
     env = success("resolve", payload)
+    if out_mode == "json":
+        stdout.write(to_json(env))
+    else:
+        stdout.write(to_text(env))
+    return 0
+
+
+def _run_describe(args: argparse.Namespace, stdout, stderr) -> int:
+    if not args.target:
+        raise UsageError("describe requires a target", argument="target", reason="missing")
+    pkg, version, prompt_id = _parse_package_coord(args.target)
+    cache_root = Path(args.cache_dir) if args.cache_dir else default_cache_dir()
+    cache = Cache(root=cache_root)
+    npmrc_path = Path(args.npmrc) if args.npmrc else None
+    config = load_npmrc(npmrc_path)
+    http_timeout = _parse_duration(args.http_timeout)
+    overall_timeout = _parse_duration(args.timeout)
+    registry = RegistryClient(config=config, offline=args.offline, http_timeout=http_timeout)
+    session = Session(
+        cache=cache,
+        registry=registry,
+        refresh=args.refresh,
+        max_prompts=args.max_prompts,
+        max_depth=args.max_depth,
+        max_download_bytes=args.max_download_size,
+        max_total_bytes=args.max_total_size,
+        verbose=bool(getattr(args, "verbose", False)),
+        stderr=stderr,
+    )
+
+    deadline_handler_installed = False
+    if overall_timeout > 0 and hasattr(signal, "SIGALRM"):
+        def _timeout(_signum, _frame):
+            raise TimeoutError("overall wall-clock timeout exceeded")
+        signal.signal(signal.SIGALRM, _timeout)
+        signal.setitimer(signal.ITIMER_REAL, overall_timeout)
+        deadline_handler_installed = True
+    try:
+        manifest, pkg_root = session.ensure_package(pkg, version)
+        if prompt_id is not None:
+            entry = manifest.prompt_by_id(prompt_id)
+            if entry is None:
+                raise ReferenceError_(
+                    f"package {pkg}@{version} does not contain prompt id {prompt_id!r}",
+                    file=str(pkg_root / "package.json"),
+                    line=None,
+                    column=None,
+                    reference=f"{pkg}@{version}#{prompt_id}",
+                    searched_in=f"{pkg}@{version}",
+                )
+            target_ids = [prompt_id]
+        else:
+            target_ids = [p.id for p in manifest.prompts]
+        resolved_docs: list[dict[str, Any]] = []
+        for pid in target_ids:
+            canonical, content, ancestors, _ = _resolve_coord(pkg, version, pid, session)
+            resolved_docs.append({"root": canonical, "content": content, "ancestors": ancestors})
+    finally:
+        if deadline_handler_installed:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+
+    out_mode = args.output or "yaml"
+    if out_mode == "yaml":
+        parts: list[str] = []
+        for d in resolved_docs:
+            parts.append(f"---\n# {d['root']}\n")
+            parts.append(_deterministic_yaml_dump(d["content"]))
+        stdout.write("".join(parts))
+        return 0
+    env = success("describe", resolved_docs)
     if out_mode == "json":
         stdout.write(to_json(env))
     else:
@@ -333,8 +472,10 @@ def run(argv: list[str] | None = None, *, stdout=None, stderr=None) -> int:
             return _run_validate(args, stdout, stderr)
         if args.cmd == "publish":
             return _run_publish(args, stdout, stderr)
+        if args.cmd == "describe":
+            return _run_describe(args, stdout, stderr)
         raise UsageError(
-            "no subcommand provided (try 'resolve', 'validate', 'publish', or 'cache clear')",
+            "no subcommand provided (try 'resolve', 'describe', 'validate', 'publish', or 'cache clear')",
             argument="<subcommand>",
             reason="missing_subcommand",
         )
@@ -347,6 +488,8 @@ def run(argv: list[str] | None = None, *, stdout=None, stderr=None) -> int:
             command_name = "validate"
         elif args.cmd == "publish":
             command_name = "publish"
+        elif args.cmd == "describe":
+            command_name = "describe"
         env = failure(command_name, err)
         stdout.write(to_json(env))
         if stderr is not None:

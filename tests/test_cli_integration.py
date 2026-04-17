@@ -422,3 +422,221 @@ def test_diamond_bfs_order_integration(tmp_path):
     assert code == EXIT_OK
     env = json.loads(cap.out.getvalue())
     assert env["result"]["content"]["body"] == "red/square"
+
+
+def test_describe_missing_target_usage_error(tmp_path):
+    cap = _Capture()
+    code = run(["describe"], stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_USAGE
+
+
+def test_describe_invalid_coord_usage_error(tmp_path):
+    cap = _Capture()
+    code = run(["describe", "./not-a-coord.yaml"], stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_USAGE
+
+
+def test_describe_single_prompt_yaml_default(tmp_path, npmrc):
+    manifest = {
+        "name": "@a/b",
+        "version": "1.0.0",
+        "prompts": [
+            {"id": "base", "path": "prompts/base.yaml"},
+            {"id": "child", "path": "prompts/child.yaml"},
+        ],
+    }
+    files = {
+        "prompts/base.yaml": b"vars:\n  x: 1\n",
+        "prompts/child.yaml": (
+            b"ancestors:\n  - ./base.yaml\n"
+            b"body: value=${vars.x}\n"
+        ),
+    }
+    tarballs = {("@a/b", "1.0.0"): _pack(manifest, files)}
+    server = _RegistryServer(tarballs)
+    server.start()
+    try:
+        rc = npmrc({"@a:registry": server.url})
+        cap = _Capture()
+        code = run([
+            "--npmrc", str(rc),
+            "--cache-dir", str(tmp_path / "cache"),
+            "describe", "@a/b@1.0.0#child",
+        ], stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+        out = cap.out.getvalue()
+        assert "body: value=1" in out
+        assert "# @a/b@1.0.0#child" in out
+    finally:
+        server.stop()
+
+
+def test_describe_package_multidoc_yaml(tmp_path, npmrc):
+    manifest = {
+        "name": "@a/b",
+        "version": "1.0.0",
+        "prompts": [
+            {"id": "base", "path": "prompts/base.yaml"},
+            {"id": "child", "path": "prompts/child.yaml"},
+        ],
+    }
+    files = {
+        "prompts/base.yaml": b"vars:\n  x: 1\nbody: base=${vars.x}\n",
+        "prompts/child.yaml": (
+            b"ancestors:\n  - ./base.yaml\n"
+            b"vars:\n  x: 2\n"
+            b"body: child=${vars.x}\n"
+        ),
+    }
+    tarballs = {("@a/b", "1.0.0"): _pack(manifest, files)}
+    server = _RegistryServer(tarballs)
+    server.start()
+    try:
+        rc = npmrc({"@a:registry": server.url})
+        cap = _Capture()
+        code = run([
+            "--npmrc", str(rc),
+            "--cache-dir", str(tmp_path / "cache"),
+            "describe", "@a/b@1.0.0",
+        ], stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+        out = cap.out.getvalue()
+        import yaml as _yaml
+        docs = list(_yaml.safe_load_all(out))
+        assert len(docs) == 2
+        assert docs[0]["body"] == "base=1"
+        assert docs[1]["body"] == "child=2"
+        assert out.count("---") == 2
+        assert "# @a/b@1.0.0#base" in out
+        assert "# @a/b@1.0.0#child" in out
+    finally:
+        server.stop()
+
+
+def test_describe_package_uses_cache_without_network(tmp_path, npmrc):
+    manifest = {
+        "name": "@a/b",
+        "version": "1.0.0",
+        "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+    }
+    tarballs = {("@a/b", "1.0.0"): _pack(manifest, {"prompts/base.yaml": b"body: hello\n"})}
+    server = _RegistryServer(tarballs)
+    server.start()
+    try:
+        rc = npmrc({"@a:registry": server.url})
+        cache_dir = tmp_path / "cache"
+        cap1 = _Capture()
+        code = run([
+            "--npmrc", str(rc),
+            "--cache-dir", str(cache_dir),
+            "describe", "@a/b@1.0.0",
+        ], stdout=cap1.out, stderr=cap1.err)
+        assert code == EXIT_OK
+    finally:
+        server.stop()
+    cap2 = _Capture()
+    code = run([
+        "--offline",
+        "--npmrc", str(tmp_path / ".npmrc"),
+        "--cache-dir", str(cache_dir),
+        "describe", "@a/b@1.0.0",
+    ], stdout=cap2.out, stderr=cap2.err)
+    assert code == EXIT_OK, cap2.out.getvalue() + cap2.err.getvalue()
+    assert "body: hello" in cap2.out.getvalue()
+
+
+def test_describe_unknown_prompt_id_reference_error(tmp_path, npmrc):
+    manifest = {"name": "@a/b", "version": "1.0.0", "prompts": [{"id": "base", "path": "prompts/base.yaml"}]}
+    tarballs = {("@a/b", "1.0.0"): _pack(manifest, {"prompts/base.yaml": b"foo: bar\n"})}
+    server = _RegistryServer(tarballs)
+    server.start()
+    try:
+        rc = npmrc({"@a:registry": server.url})
+        cap = _Capture()
+        code = run([
+            "--output", "json",
+            "--npmrc", str(rc),
+            "--cache-dir", str(tmp_path / "cache"),
+            "describe", "@a/b@1.0.0#nope",
+        ], stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_REFERENCE
+    finally:
+        server.stop()
+
+
+def test_describe_single_prompt_json_envelope(tmp_path, npmrc):
+    manifest = {
+        "name": "@a/b",
+        "version": "1.0.0",
+        "prompts": [
+            {"id": "base", "path": "prompts/base.yaml"},
+            {"id": "child", "path": "prompts/child.yaml"},
+        ],
+    }
+    files = {
+        "prompts/base.yaml": b"vars:\n  x: 1\n",
+        "prompts/child.yaml": (
+            b"ancestors:\n  - ./base.yaml\n"
+            b"body: value=${vars.x}\n"
+        ),
+    }
+    tarballs = {("@a/b", "1.0.0"): _pack(manifest, files)}
+    server = _RegistryServer(tarballs)
+    server.start()
+    try:
+        rc = npmrc({"@a:registry": server.url})
+        cap = _Capture()
+        code = run([
+            "--output", "json",
+            "--npmrc", str(rc),
+            "--cache-dir", str(tmp_path / "cache"),
+            "describe", "@a/b@1.0.0#child",
+        ], stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+        env = json.loads(cap.out.getvalue())
+        assert env["status"] == "ok"
+        assert env["command"] == "describe"
+        assert isinstance(env["result"], list)
+        assert len(env["result"]) == 1
+        doc = env["result"][0]
+        assert doc["root"] == "@a/b@1.0.0#child"
+        assert doc["content"]["body"] == "value=1"
+        assert any(a["canonical_id"] == "@a/b@1.0.0#base" for a in doc["ancestors"])
+    finally:
+        server.stop()
+
+
+def test_describe_package_json_envelope(tmp_path, npmrc):
+    manifest = {
+        "name": "@a/b",
+        "version": "1.0.0",
+        "prompts": [
+            {"id": "base", "path": "prompts/base.yaml"},
+            {"id": "child", "path": "prompts/child.yaml"},
+        ],
+    }
+    files = {
+        "prompts/base.yaml": b"body: base\n",
+        "prompts/child.yaml": b"ancestors:\n  - ./base.yaml\nbody: child\n",
+    }
+    tarballs = {("@a/b", "1.0.0"): _pack(manifest, files)}
+    server = _RegistryServer(tarballs)
+    server.start()
+    try:
+        rc = npmrc({"@a:registry": server.url})
+        cap = _Capture()
+        code = run([
+            "--output", "json",
+            "--npmrc", str(rc),
+            "--cache-dir", str(tmp_path / "cache"),
+            "describe", "@a/b@1.0.0",
+        ], stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+        env = json.loads(cap.out.getvalue())
+        prompts = env["result"]
+        assert isinstance(prompts, list)
+        assert [p["root"] for p in prompts] == ["@a/b@1.0.0#base", "@a/b@1.0.0#child"]
+        assert prompts[0]["content"]["body"] == "base"
+        assert prompts[1]["content"]["body"] == "child"
+    finally:
+        server.stop()

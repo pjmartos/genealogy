@@ -45,6 +45,10 @@ stemmata resolve ./prompts/onboarding.yaml
 # Or resolve a prompt published to your registry by coordinate:
 stemmata resolve '@acme/prompts-core@1.2.3#onboarding'
 
+# Describe every prompt in a published package (or a single one):
+stemmata describe '@acme/prompts-core@1.2.3'
+stemmata describe '@acme/prompts-core@1.2.3#onboarding'
+
 # Need machine-readable output for a script or pipeline:
 stemmata --output json resolve ./prompts/onboarding.yaml
 
@@ -99,6 +103,14 @@ All violations are collected and reported together. Error payloads include the n
 Flags: `--strict-schema` (treat unfetchable schemas as errors), plus the same resource-limit flags as `resolve`.
 
 `$schema` enforcement requires `pip install stemmata[publish]` (adds `jsonschema`). Supports `file://`, `http://`, and `https://` URIs, as well as bare relative paths (resolved against the validated file's directory).
+
+### `describe <target>`
+
+Resolves every prompt in a published package, or a single prompt inside it. Target is either `@<scope>/<name>@<version>` (describe the whole package) or `@<scope>/<name>@<version>#<prompt-id>` (describe one prompt). Each prompt is resolved with ancestors merged and placeholders interpolated, using the same pipeline as `resolve`.
+
+Default YAML output emits one document per prompt, separated by `---` start markers. Each sub-document is prefixed with a `# <canonical-id>` comment (e.g. `# @acme/prompts-core@1.2.3#onboarding`) so the reader can tell which prompt is which. `--output json` returns an array of `{root, content, ancestors[]}` entries in manifest declaration order (length 1 when targeting a single prompt). Package artifacts are fetched through the usual cache (`~/.cache/stemmata` by default), so repeated invocations reuse downloaded tarballs; `--offline` and `--refresh` behave as with `resolve`.
+
+Resource-limit flags match `resolve`.
 
 ### `cache clear`
 
