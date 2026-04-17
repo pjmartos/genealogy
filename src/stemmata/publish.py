@@ -30,6 +30,7 @@ from stemmata.interp import (
     _exact_placeholder,
     _is_scalar,
     _parse_placeholder_tokens,
+    interpolate,
     lookup_with_provenance,
 )
 from stemmata.manifest import Manifest, parse_manifest
@@ -37,7 +38,7 @@ from stemmata.merge import merge_namespaces
 from stemmata.npmrc import NpmConfig
 from stemmata.registry import RegistryClient
 from stemmata.resolver import Session, layer_order, resolve_graph
-from stemmata.schema_check import SchemaCheckOptions, validate_against_schema
+from stemmata.schema_check import SchemaCheckOptions, resolve_schema_uri, validate_against_schema
 from stemmata.yaml_loader import scalar_meta
 
 
@@ -207,13 +208,22 @@ def _check_one_prompt(
 
     schema_uri = graph.nodes[graph.root_id].doc.schema_uri
     if schema_uri:
-        # Schema validation runs against the resolved-but-not-interpolated
-        # namespace by design: $schema describes the prompt's content
-        # contract, which authors reason about in terms of the merged tree.
+        schema_uri = resolve_schema_uri(schema_uri, str(prompt_path))
+        position_ns = graph.nodes[graph.root_id].doc.namespace
+        if placeholder_errors:
+            schema_target = merged
+        else:
+            root_file = graph.nodes[graph.root_id].file
+            try:
+                schema_target = interpolate(merged, layers, root_file=root_file)
+            except PromptCliError as e:
+                errors.append(e)
+                schema_target = merged
         errors.extend(validate_against_schema(
-            merged, schema_uri,
+            schema_target, schema_uri,
             file=str(prompt_path),
             opts=schema_opts,
+            position_instance=position_ns,
         ))
 
     return errors

@@ -1,3 +1,4 @@
+$schema: "../schemas/onboarding.schema.json"
 ancestors:
   - "./database.yaml"
   - "./persona.yaml"

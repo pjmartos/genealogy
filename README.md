@@ -48,6 +48,10 @@ stemmata resolve '@acme/prompts-core@1.2.3#onboarding'
 # Need machine-readable output for a script or pipeline:
 stemmata --output json resolve ./prompts/onboarding.yaml
 
+# Validate a prompt (or an entire directory) against its $schema:
+stemmata validate ./prompts/onboarding.yaml
+stemmata validate ./prompts/
+
 # Wipe the local cache (by default stored under ~/.cache/stemmata):
 stemmata cache clear
 ```
@@ -83,6 +87,18 @@ Builds and uploads the package at `path` (default `.`) to the registry routed by
 Flags: `--dry-run` (build the tarball but skip upload), `--strict-schema` (treat unfetchable / unvalidated `$schema` as an error rather than a warning), `--tarball <path>` (write the built tarball to `path`). The tarball is deterministic: identical inputs produce byte-identical output.
 
 `$schema` enforcement requires `pip install stemmata[publish]` (adds `jsonschema`). Without it, `publish` warns and skips schema validation in default mode, or errors in `--strict-schema` mode.
+
+### `validate <target>`
+
+Validates prompt files against their `$schema`. Target is a file path or a directory (recursively discovers `.yaml`, `.yml`, `.json` files). For YAML prompts with ancestors, the full resolve → merge → interpolate pipeline runs before validation so inherited and interpolated values participate.
+
+Multi-document YAML files (separated by `---`) are supported — each sub-document is validated independently against its own `$schema`. Files without `$schema` are silently skipped.
+
+All violations are collected and reported together. Error payloads include the natural source line number of the offending value.
+
+Flags: `--strict-schema` (treat unfetchable schemas as errors), plus the same resource-limit flags as `resolve`.
+
+`$schema` enforcement requires `pip install stemmata[publish]` (adds `jsonschema`). Supports `file://`, `http://`, and `https://` URIs, as well as bare relative paths (resolved against the validated file's directory).
 
 ### `cache clear`
 

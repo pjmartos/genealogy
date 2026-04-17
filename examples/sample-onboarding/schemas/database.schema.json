@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Database prompt",
+  "description": "Content contract for the resolved database prompt.",
+  "type": "object",
+  "required": ["database"],
+  "properties": {
+    "vars": {
+      "type": "object",
+      "properties": {
+        "region":          { "type": "string" },
+        "agent_name":      { "type": "string" },
+        "timeout_seconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "database": {
+      "type": "object",
+      "required": ["host", "port", "ssl", "dsn"],
+      "properties": {
+        "host": { "type": "string" },
+        "port": { "type": "integer" },
+        "ssl":  { "type": "boolean" },
+        "dsn":  { "type": "string", "pattern": "^postgres://" }
+      },
+      "additionalProperties": false
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

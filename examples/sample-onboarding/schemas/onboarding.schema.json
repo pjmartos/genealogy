@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Onboarding prompt",
+  "description": "Content contract for the fully resolved onboarding prompt.",
+  "type": "object",
+  "required": ["vars", "database", "persona", "body"],
+  "properties": {
+    "vars": {
+      "type": "object",
+      "required": ["region", "agent_name", "timeout_seconds"],
+      "properties": {
+        "region":          { "type": "string" },
+        "agent_name":      { "type": "string" },
+        "timeout_seconds": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "database": {
+      "type": "object",
+      "required": ["host", "port", "ssl", "dsn"],
+      "properties": {
+        "host": { "type": "string" },
+        "port": { "type": "integer" },
+        "ssl":  { "type": "boolean" },
+        "dsn":  { "type": "string", "pattern": "^postgres://" }
+      },
+      "additionalProperties": false
+    },
+    "persona": {
+      "type": "object",
+      "required": ["name", "greeting"],
+      "properties": {
+        "name":     { "type": "string" },
+        "greeting": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1
+    },
+    "manifest": {
+      "type": "object",
+      "properties": {
+        "ordering": {
+          "type": "array",
+          "minItems": 1
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

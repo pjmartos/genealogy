@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Deployment entry",
+  "description": "Schema for a single deployment entry in a multi-document stream.",
+  "type": "object",
+  "required": ["target", "replicas"],
+  "properties": {
+    "target":   { "type": "string", "enum": ["staging", "production"] },
+    "replicas": { "type": "integer", "minimum": 1 },
+    "canary":   { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

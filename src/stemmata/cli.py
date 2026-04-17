@@ -73,6 +73,16 @@ def _build_parser() -> argparse.ArgumentParser:
     cache_subs = cache_cmd.add_subparsers(dest="cache_cmd")
     cache_subs.add_parser("clear")
 
+    validate_cmd = subs.add_parser("validate")
+    validate_cmd.add_argument("target", nargs="?")
+    validate_cmd.add_argument("--strict-schema", action="store_true", default=False)
+    validate_cmd.add_argument("--max-prompts", type=int, default=1000)
+    validate_cmd.add_argument("--max-depth", type=int, default=50)
+    validate_cmd.add_argument("--max-download-size", type=int, default=64 * 1024 * 1024)
+    validate_cmd.add_argument("--max-total-size", type=int, default=512 * 1024 * 1024)
+    validate_cmd.add_argument("--http-timeout", default="30s")
+    validate_cmd.add_argument("--timeout", default="5m")
+
     publish_cmd = subs.add_parser("publish")
     publish_cmd.add_argument("path", nargs="?", default=".")
     publish_cmd.add_argument("--dry-run", action="store_true", default=False)
@@ -248,6 +258,44 @@ def _run_publish(args: argparse.Namespace, stdout, stderr) -> int:
     return 0
 
 
+def _run_validate(args: argparse.Namespace, stdout, stderr) -> int:
+    from stemmata.validate import run_validate
+    from stemmata.schema_check import SchemaCheckOptions
+
+    if not args.target:
+        raise UsageError("validate requires a target", argument="target", reason="missing")
+    cache_root = Path(args.cache_dir) if args.cache_dir else default_cache_dir()
+    npmrc_path = Path(args.npmrc) if args.npmrc else None
+    config = load_npmrc(npmrc_path)
+    http_timeout = _parse_duration(args.http_timeout)
+
+    def session_factory():
+        from stemmata.resolver import Session
+        return Session(
+            cache=Cache(root=cache_root),
+            registry=RegistryClient(config=config, offline=args.offline, http_timeout=http_timeout),
+            refresh=args.refresh,
+            max_prompts=args.max_prompts, max_depth=args.max_depth,
+            max_download_bytes=args.max_download_size, max_total_bytes=args.max_total_size,
+            verbose=bool(getattr(args, "verbose", False)), stderr=stderr,
+        )
+
+    schema_opts = SchemaCheckOptions(
+        offline=args.offline, strict=bool(args.strict_schema), refresh=args.refresh,
+        http_timeout=http_timeout, cache_root=cache_root, stderr=stderr,
+    )
+    payload = run_validate(args.target, session_factory, schema_opts)
+    env = success("validate", payload)
+    out_mode = args.output or "yaml"
+    if out_mode == "text":
+        stdout.write(to_text(env))
+    elif out_mode == "json":
+        stdout.write(to_json(env))
+    else:
+        stdout.write(to_yaml(env))
+    return 0
+
+
 def _run_cache_clear(args: argparse.Namespace, stdout, stderr) -> int:
     cache_root = Path(args.cache_dir) if args.cache_dir else default_cache_dir()
     cache = Cache(root=cache_root)
@@ -281,10 +329,12 @@ def run(argv: list[str] | None = None, *, stdout=None, stderr=None) -> int:
             return _run_resolve(args, stdout, stderr)
         if args.cmd == "cache" and args.cache_cmd == "clear":
             return _run_cache_clear(args, stdout, stderr)
+        if args.cmd == "validate":
+            return _run_validate(args, stdout, stderr)
         if args.cmd == "publish":
             return _run_publish(args, stdout, stderr)
         raise UsageError(
-            "no subcommand provided (try 'resolve', 'publish', or 'cache clear')",
+            "no subcommand provided (try 'resolve', 'validate', 'publish', or 'cache clear')",
             argument="<subcommand>",
             reason="missing_subcommand",
         )
@@ -293,6 +343,8 @@ def run(argv: list[str] | None = None, *, stdout=None, stderr=None) -> int:
             command_name = "cache.clear"
         elif args.cmd == "resolve":
             command_name = "resolve"
+        elif args.cmd == "validate":
+            command_name = "validate"
         elif args.cmd == "publish":
             command_name = "publish"
         env = failure(command_name, err)

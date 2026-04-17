@@ -1,3 +1,4 @@
+$schema: "../schemas/database.schema.json"
 ancestors:
   - "../defaults.yaml"
 

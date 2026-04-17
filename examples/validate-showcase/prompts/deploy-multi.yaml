@@ -1,0 +1,11 @@
+# Multi-document YAML: two deployment entries, each validated independently.
+# The first document is valid; the second has replicas: 0 (minimum is 1).
+$schema: "../schemas/deploy-entry.schema.json"
+target: "staging"
+replicas: 2
+canary: true
+---
+$schema: "../schemas/deploy-entry.schema.json"
+target: "production"
+replicas: 0
+canary: false

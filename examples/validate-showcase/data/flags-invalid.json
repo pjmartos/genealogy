@@ -1,0 +1,9 @@
+{
+  "$schema": "../schemas/feature-flags.schema.json",
+  "flags": {
+    "experiment_x": {
+      "enabled": "yes",
+      "rollout_pct": 150
+    }
+  }
+}

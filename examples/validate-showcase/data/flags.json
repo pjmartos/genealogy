@@ -1,0 +1,15 @@
+{
+  "$schema": "../schemas/feature-flags.schema.json",
+  "flags": {
+    "dark_mode": {
+      "enabled": true,
+      "description": "Enable dark mode for the dashboard",
+      "rollout_pct": 75
+    },
+    "new_checkout": {
+      "enabled": false,
+      "description": "Revamped checkout flow",
+      "rollout_pct": 0
+    }
+  }
+}

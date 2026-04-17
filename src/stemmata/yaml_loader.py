@@ -182,6 +182,51 @@ def scalar_meta(s: Any) -> tuple[str | None, int | None, int | None, bool]:
     return None, None, None, True
 
 
+def load_all_with_positions(
+    text: str, *, file: str, strict: bool = True
+) -> list[tuple[Any, int]]:
+    """Load every document from a multi-document YAML stream.
+
+    Returns ``[(data, start_line), ...]``.  Line numbers inside
+    ``_ScalarStr`` instances are absolute (relative to the full stream).
+    """
+    if strict:
+        _check_bom_and_crlf(text, file)
+    loader = _SafeLoader(text)
+    loader.name = file
+    original_construct_scalar = loader.construct_scalar
+
+    def tracking(node: yaml.ScalarNode) -> Any:
+        value = original_construct_scalar(node)
+        wrapped = _ScalarStr(value)
+        wrapped._pcli_line = node.start_mark.line + 1
+        wrapped._pcli_column = node.start_mark.column + 1
+        wrapped._pcli_flow = _is_flow_scalar(node)
+        return wrapped
+
+    loader.construct_scalar = tracking  # type: ignore[method-assign]
+    docs: list[tuple[Any, int]] = []
+    try:
+        while loader.check_data():
+            start_line = loader.get_mark().line + 1
+            docs.append((loader.get_data(), start_line))
+    except SchemaError:
+        raise
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        raise SchemaError(
+            f"YAML parse error in {file}: {e}",
+            file=file,
+            line=mark.line + 1 if mark else None,
+            column=mark.column + 1 if mark else None,
+            field_name="<yaml>",
+            reason=str(e),
+        )
+    finally:
+        loader.dispose()
+    return docs
+
+
 def attach_file(data: Any, file: str) -> Any:
     if isinstance(data, _ScalarStr):
         data._pcli_file = file

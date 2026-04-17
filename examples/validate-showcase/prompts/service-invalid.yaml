@@ -1,0 +1,11 @@
+# Deliberately invalid: region does not match the ^[a-z]{2}-[a-z]+-[0-9]+$
+# pattern, and database.port is a string instead of an integer.
+$schema: "../schemas/service.schema.json"
+ancestors:
+  - "./base.yaml"
+
+service:
+  name: "broken-service"
+  region: "INVALID"
+database:
+  port: "not-a-number"

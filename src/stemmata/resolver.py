@@ -364,6 +364,27 @@ def resolve_graph(
     )
 
 
+def resolve_from_document(
+    doc: PromptDocument,
+    file_path: str,
+    session: Session,
+) -> ResolvedGraph:
+    """Like :func:`resolve_graph` but starts from a pre-parsed document."""
+    abs_path = _canonical_path(file_path)
+    attach_file(doc.namespace, abs_path)
+    root_id = NodeId.for_file(abs_path)
+    root_node = Node(id=root_id, doc=doc, file=abs_path)
+    for _ in range(32):
+        nodes, order, distances = _bfs_build(root_id, root_node, session)
+        _detect_cycles(nodes, root_id)
+        new_overrides = _compute_version_overrides(nodes, order, distances)
+        if new_overrides == session.version_overrides:
+            return ResolvedGraph(root_id=root_id, nodes=nodes, order=order, distances=distances)
+        session.version_overrides = new_overrides
+    raise SchemaError("version conflict resolution did not converge",
+                      file=file_path, field_name="resolution", reason="no_convergence")
+
+
 def _compute_version_overrides(
     nodes: dict[NodeId, Node],
     order: list[NodeId],

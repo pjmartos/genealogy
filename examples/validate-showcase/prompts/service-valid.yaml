@@ -1,0 +1,6 @@
+$schema: "../schemas/service.schema.json"
+ancestors:
+  - "./base.yaml"
+
+service:
+  name: "order-service"

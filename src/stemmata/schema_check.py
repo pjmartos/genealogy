@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -16,6 +18,19 @@ from stemmata.errors import (
     PromptCliError,
     SchemaError,
 )
+
+
+def resolve_schema_uri(schema_uri: str, source_file: str) -> str:
+    """Resolve *schema_uri* to a form ``_fetch_schema`` can consume.
+
+    URIs with a scheme (``http://``, ``https://``, ``file://``) pass through
+    unchanged.  Bare filesystem paths are resolved relative to the directory
+    of *source_file* and returned as absolute paths.
+    """
+    if "://" in schema_uri:
+        return schema_uri
+    base = os.path.dirname(os.path.abspath(source_file))
+    return os.path.normpath(os.path.join(base, schema_uri))
 
 
 def _have_jsonschema() -> bool:
@@ -54,27 +69,36 @@ def _fetch_schema(uri: str, opts: SchemaCheckOptions) -> dict[str, Any]:
         except Exception:
             cache_path.unlink(missing_ok=True)
 
-    if opts.offline:
-        raise OfflineError(uri)
-
-    if not (uri.startswith("http://") or uri.startswith("https://")):
-        raise SchemaError(
-            f"$schema URI {uri!r} is not http(s); only http/https schema URIs can be fetched",
-            file=uri,
-            field_name="$schema",
-            reason="unsupported_schema_uri_scheme",
-        )
-
-    req = urllib.request.Request(uri, headers={"Accept": "application/schema+json, application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=opts.http_timeout) as resp:
-            raw = resp.read()
-    except urllib.error.HTTPError as e:
-        raise NetworkError(uri, e.code, f"HTTP {e.code}: {e.reason}")
-    except urllib.error.URLError as e:
-        raise NetworkError(uri, None, str(e.reason))
-    except TimeoutError:
-        raise NetworkError(uri, None, "request timed out")
+    if uri.startswith("file://"):
+        try:
+            raw = Path(urllib.request.url2pathname(uri[len("file://"):])).read_bytes()
+        except OSError as e:
+            raise SchemaError(f"cannot read local $schema {uri!r}: {e}",
+                              file=uri, field_name="$schema", reason="schema_file_not_found")
+    elif uri.startswith("http://") or uri.startswith("https://"):
+        if opts.offline:
+            raise OfflineError(uri)
+        req = urllib.request.Request(uri, headers={"Accept": "application/schema+json, application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=opts.http_timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            raise NetworkError(uri, e.code, f"HTTP {e.code}: {e.reason}")
+        except urllib.error.URLError as e:
+            raise NetworkError(uri, None, str(e.reason))
+        except TimeoutError:
+            raise NetworkError(uri, None, "request timed out")
+    else:
+        # Bare filesystem path (already resolved to absolute by resolve_schema_uri).
+        p = Path(uri)
+        if not p.is_file():
+            raise SchemaError(f"$schema file not found: {uri!r}",
+                              file=uri, field_name="$schema", reason="schema_file_not_found")
+        try:
+            raw = p.read_bytes()
+        except OSError as e:
+            raise SchemaError(f"cannot read $schema {uri!r}: {e}",
+                              file=uri, field_name="$schema", reason="schema_file_not_found")
 
     try:
         schema = json.loads(raw)
@@ -91,23 +115,62 @@ def _warn(stderr: Any, message: str) -> None:
     stream.write(f"warning: {message}\n")
 
 
+def _lookup_line(instance: Any, path_parts: list[str | int]) -> int | None:
+    """Walk *instance* along *path_parts* and return the source line number.
+
+    String scalars carry ``_pcli_line`` from the YAML loader.  For non-string
+    scalars (int, bool, etc.) we fall back to the YAML key's line, since dict
+    keys are also ``_ScalarStr`` in YAML-loaded trees.
+    """
+    cur: Any = instance
+    last_key_line: int | None = None
+    for segment in path_parts:
+        if isinstance(cur, dict):
+            for k in cur:
+                if k == segment:
+                    kl = getattr(k, "_pcli_line", None)
+                    if kl is not None:
+                        last_key_line = kl
+                    break
+            if segment in cur:
+                cur = cur[segment]
+            else:
+                return last_key_line
+        elif isinstance(cur, list) and isinstance(segment, int) and 0 <= segment < len(cur):
+            cur = cur[segment]
+        else:
+            return last_key_line
+    return getattr(cur, "_pcli_line", None) or last_key_line
+
+
+def _json_key_line(text: str, dotted_field: str) -> int | None:
+    """Best-effort line number for a dotted field in raw JSON text."""
+    pos = 0
+    for segment in dotted_field.split("."):
+        if segment.isdigit():
+            continue
+        m = re.search(r'"' + re.escape(segment) + r'"\s*:', text[pos:])
+        if m is None:
+            break
+        pos += m.start()
+    else:
+        return text[:pos].count("\n") + 1 if pos > 0 else None
+    return text[:pos].count("\n") + 1 if pos > 0 else None
+
+
 def validate_against_schema(
     instance: Any,
     schema_uri: str,
     *,
     file: str,
     opts: SchemaCheckOptions,
+    position_instance: Any | None = None,
 ) -> list[PromptCliError]:
     """Validate ``instance`` against the JSON Schema at ``schema_uri``.
 
-    Returns a list of ``SchemaError``s describing each validation failure.
-    Behaviour under unusual conditions:
-
-    - If ``jsonschema`` is not installed and ``opts.strict`` is true, returns
-      a single ``SchemaError`` instructing the user to install the publish
-      extra. If not strict, returns ``[]`` after writing a warning to stderr.
-    - If ``opts.offline`` is true and the schema is not cached, behaves
-      analogously: error in strict mode, warning otherwise.
+    If *position_instance* is provided it is used for line-number lookup
+    (useful when *instance* has been through interpolation and lost the
+    ``_ScalarStr`` wrappers — pass the pre-interpolation tree instead).
     """
     if not _have_jsonschema():
         msg = (
@@ -157,12 +220,15 @@ def validate_against_schema(
             reason="invalid_schema_document",
         )]
 
+    pos_src = position_instance if position_instance is not None else instance
     errors: list[PromptCliError] = []
     for verr in sorted(validator.iter_errors(instance), key=lambda e: list(e.absolute_path)):
         path = ".".join(str(p) for p in verr.absolute_path) or "<root>"
+        line = _lookup_line(pos_src, list(verr.absolute_path))
         errors.append(SchemaError(
             f"$schema validation failed at {path}: {verr.message}",
             file=file,
+            line=line,
             field_name=path,
             reason="schema_validation_failed",
         ))

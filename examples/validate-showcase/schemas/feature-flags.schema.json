@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Feature flags",
+  "description": "Schema for a JSON feature-flags configuration file.",
+  "type": "object",
+  "required": ["flags"],
+  "properties": {
+    "flags": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["enabled"],
+        "properties": {
+          "enabled":     { "type": "boolean" },
+          "description": { "type": "string" },
+          "rollout_pct": { "type": "integer", "minimum": 0, "maximum": 100 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
