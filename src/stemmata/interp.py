@@ -24,6 +24,9 @@ class Layer:
 class ResourceBinding:
     bindings: dict[tuple[str, str], str] = field(default_factory=dict)
     flat_texts: dict[str, str] = field(default_factory=dict)
+    prompt_resources: dict[str, list[str]] = field(default_factory=dict)
+    resource_children: dict[str, list[str]] = field(default_factory=dict)
+    resource_files: dict[str, str] = field(default_factory=dict)
 
 
 def _resource_body(inner: str) -> str | None:

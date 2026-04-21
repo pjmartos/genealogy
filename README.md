@@ -121,17 +121,19 @@ Resource-limit flags match `resolve`.
 
 Prints the ancestor DAG rooted at `<target>`, which takes the same two forms as `resolve` (a local YAML/JSON path or a `@<scope>/<name>@<version>#<prompt-id>` coordinate). The resolver runs the same eager pipeline as `resolve`, so cycles, missing ancestors, and version conflicts surface with the usual exit codes; `--offline` / `--refresh` and the resource-limit flags all apply.
 
-Default `--output text` produces an ASCII tree (`|-- ` / `` `-- `` connectors). Diamond inheritance is rendered once in full and subsequent visits are marked `(seen)` so the output stays finite:
+Default `--output text` produces an ASCII tree (`|-- ` / `` `-- `` connectors). Markdown resources reached via `${resource:...}` are rendered inline under the prompt (or resource) that references them and are prefixed with `resource:` to disambiguate them from prompt coordinates. Diamond inheritance — across both ancestor and resource edges — is rendered once in full and subsequent visits are marked `(seen)` so the output stays finite:
 
 ```
 root.yaml
 |-- a.yaml
 |   `-- x.yaml
-`-- b.yaml
-    `-- x.yaml  (seen)
+|-- b.yaml
+|   `-- x.yaml  (seen)
+`-- resource:@acme/prompts-core@1.2.3#playbook
+    `-- resource:@acme/prompts-core@1.2.3#safety
 ```
 
-`--output yaml` / `--output json` emit a `{root, nodes[], edges[]}` envelope instead, with each node carrying its canonical id, source file, and BFS distance from the root.
+`--output yaml` / `--output json` emit a `{root, nodes[], edges[]}` envelope instead, with each node carrying its canonical id, source file, BFS distance from the root, and `kind` (`prompt` or `resource`). Edges carry `kind` (`ancestor` or `resource`).
 
 ### `cache clear`
 

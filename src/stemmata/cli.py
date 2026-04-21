@@ -6,6 +6,7 @@ import re
 import signal
 import sys
 import traceback
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -267,25 +268,48 @@ def _run_resolve(args: argparse.Namespace, stdout, stderr) -> int:
     return 0
 
 
-def _render_tree(graph) -> str:
-    lines: list[str] = ["\n", graph.root_id.canonical + "\n"]
-    visited: set = {graph.root_id}
+def _label_for(canonical: str, kind: str) -> str:
+    return f"resource:{canonical}" if kind == "resource" else canonical
 
-    def walk(nid, prefix: str, is_last: bool) -> None:
+
+def _render_tree(graph, resources=None) -> str:
+    prompt_resources = resources.prompt_resources if resources is not None else {}
+    resource_children_map = resources.resource_children if resources is not None else {}
+    canonical_to_nid = {nid.canonical: nid for nid in graph.nodes}
+
+    def children_of(canonical: str, kind: str) -> list[tuple[str, str]]:
+        kids: list[tuple[str, str]] = []
+        if kind == "prompt":
+            nid = canonical_to_nid.get(canonical)
+            if nid is not None:
+                for child in graph.nodes[nid].children:
+                    kids.append((child.canonical, "prompt"))
+            for rc in prompt_resources.get(canonical, []):
+                kids.append((rc, "resource"))
+        else:
+            for rc in resource_children_map.get(canonical, []):
+                kids.append((rc, "resource"))
+        return kids
+
+    root_canonical = graph.root_id.canonical
+    visited: set[str] = {root_canonical}
+    lines: list[str] = ["\n", _label_for(root_canonical, "prompt") + "\n"]
+
+    def walk(canonical: str, kind: str, prefix: str, is_last: bool) -> None:
         connector = "`-- " if is_last else "|-- "
-        revisit = "  (seen)" if nid in visited else ""
-        lines.append(f"{prefix}{connector}{nid.canonical}{revisit}\n")
-        if nid in visited:
+        revisit = "  (seen)" if canonical in visited else ""
+        lines.append(f"{prefix}{connector}{_label_for(canonical, kind)}{revisit}\n")
+        if canonical in visited:
             return
-        visited.add(nid)
-        kids = graph.nodes[nid].children
+        visited.add(canonical)
+        kids = children_of(canonical, kind)
         ext = "    " if is_last else "|   "
-        for i, c in enumerate(kids):
-            walk(c, prefix + ext, i == len(kids) - 1)
+        for i, (c, k) in enumerate(kids):
+            walk(c, k, prefix + ext, i == len(kids) - 1)
 
-    root_kids = graph.nodes[graph.root_id].children
-    for i, c in enumerate(root_kids):
-        walk(c, "", i == len(root_kids) - 1)
+    root_kids = children_of(root_canonical, "prompt")
+    for i, (c, k) in enumerate(root_kids):
+        walk(c, k, "", i == len(root_kids) - 1)
     return "".join(lines)
 
 
@@ -320,29 +344,57 @@ def _run_tree(args: argparse.Namespace, stdout, stderr) -> int:
         deadline_handler_installed = True
     try:
         graph = resolve_graph(args.target, session)
-        build_resource_binding(graph, session)
+        resources = build_resource_binding(graph, session)
     finally:
         if deadline_handler_installed:
             signal.setitimer(signal.ITIMER_REAL, 0)
 
     out_mode = args.output or "text"
     if out_mode == "text":
-        stdout.write(_render_tree(graph))
+        stdout.write(_render_tree(graph, resources))
         return 0
 
-    nodes_payload = [
+    nodes_payload: list[dict[str, Any]] = [
         {
             "id": nid.canonical,
             "file": graph.nodes[nid].file,
             "distance": graph.distances[nid],
+            "kind": "prompt",
         }
         for nid in graph.order
     ]
-    edges_payload = [
-        {"from": nid.canonical, "to": child.canonical}
+    edges_payload: list[dict[str, Any]] = [
+        {"from": nid.canonical, "to": child.canonical, "kind": "ancestor"}
         for nid in graph.order
         for child in graph.nodes[nid].children
     ]
+
+    resource_distances: dict[str, int] = {}
+    resource_order: list[str] = []
+    queue: deque[tuple[str, int]] = deque()
+    for nid in graph.order:
+        for rc in resources.prompt_resources.get(nid.canonical, []):
+            edges_payload.append({"from": nid.canonical, "to": rc, "kind": "resource"})
+            if rc not in resource_distances:
+                queue.append((rc, graph.distances[nid] + 1))
+                resource_distances[rc] = graph.distances[nid] + 1
+                resource_order.append(rc)
+    while queue:
+        canonical, dist = queue.popleft()
+        for child in resources.resource_children.get(canonical, []):
+            edges_payload.append({"from": canonical, "to": child, "kind": "resource"})
+            if child not in resource_distances:
+                resource_distances[child] = dist + 1
+                resource_order.append(child)
+                queue.append((child, dist + 1))
+    for canonical in resource_order:
+        nodes_payload.append({
+            "id": canonical,
+            "file": resources.resource_files.get(canonical, ""),
+            "distance": resource_distances[canonical],
+            "kind": "resource",
+        })
+
     payload = {
         "root": graph.root_id.canonical,
         "nodes": nodes_payload,

@@ -500,6 +500,147 @@ def test_tree_still_renders_without_resource_refs(tmp_path):
     assert "@acme/p@1.0.0#base" in out.getvalue()
 
 
+def test_tree_renders_resources_with_prefix(tmp_path):
+    """Direct and transitive Markdown resources appear under the prompt that
+    references them, prefixed with ``resource:`` to disambiguate from prompts."""
+    import io
+    from stemmata.cli import run as cli_run
+    from stemmata.cache import Cache as _Cache
+
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "root", "path": "prompts/root.yaml"}],
+                "resources": [
+                    {"id": "outer", "path": "resources/outer.md", "contentType": "markdown"},
+                    {"id": "inner", "path": "resources/inner.md", "contentType": "markdown"},
+                ],
+            },
+            {
+                "prompts/root.yaml": b'body: "${resource:../resources/outer.md}"\n',
+                "resources/outer.md": b"head\n${resource:inner.md}\ntail\n",
+                "resources/inner.md": b"inner text\n",
+            },
+        ),
+    }
+    cache = _Cache(root=tmp_path / "cache")
+    for (name, ver), data in tarballs.items():
+        cache.install_tarball(name, ver, data)
+
+    out, err = io.StringIO(), io.StringIO()
+    rc = cli_run(
+        ["--offline", "--cache-dir", str(tmp_path / "cache"),
+         "tree", "@acme/p@1.0.0#root"],
+        stdout=out, stderr=err,
+    )
+    assert rc == 0, out.getvalue() + err.getvalue()
+    lines = out.getvalue().splitlines()
+    assert lines[1] == "@acme/p@1.0.0#root"
+    assert any("resource:@acme/p@1.0.0#outer" in line for line in lines[2:])
+    assert any("resource:@acme/p@1.0.0#inner" in line for line in lines[2:])
+
+
+def test_tree_diamond_resource_marks_revisit(tmp_path):
+    """A resource reached from two different prompts is expanded once, then
+    revisits print ``(seen)``, mirroring ancestor-DAG behaviour."""
+    import io
+    from stemmata.cli import run as cli_run
+    from stemmata.cache import Cache as _Cache
+
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [
+                    {"id": "leaf", "path": "prompts/leaf.yaml"},
+                    {"id": "a", "path": "prompts/a.yaml"},
+                    {"id": "b", "path": "prompts/b.yaml"},
+                    {"id": "root", "path": "prompts/root.yaml"},
+                ],
+                "resources": [
+                    {"id": "shared", "path": "resources/shared.md", "contentType": "markdown"},
+                ],
+            },
+            {
+                "prompts/leaf.yaml": b"x: 1\n",
+                "prompts/a.yaml": (
+                    b"ancestors:\n  - ./leaf.yaml\nbody: \"${resource:../resources/shared.md}\"\n"
+                ),
+                "prompts/b.yaml": (
+                    b"ancestors:\n  - ./leaf.yaml\nbody: \"${resource:../resources/shared.md}\"\n"
+                ),
+                "prompts/root.yaml": b"ancestors:\n  - ./a.yaml\n  - ./b.yaml\n",
+                "resources/shared.md": b"shared content\n",
+            },
+        ),
+    }
+    cache = _Cache(root=tmp_path / "cache")
+    for (name, ver), data in tarballs.items():
+        cache.install_tarball(name, ver, data)
+
+    out, err = io.StringIO(), io.StringIO()
+    rc = cli_run(
+        ["--offline", "--cache-dir", str(tmp_path / "cache"),
+         "tree", "@acme/p@1.0.0#root"],
+        stdout=out, stderr=err,
+    )
+    assert rc == 0, out.getvalue() + err.getvalue()
+    text = out.getvalue()
+    # Shared resource is reached via both a and b — one full expansion, one (seen).
+    assert text.count("resource:@acme/p@1.0.0#shared") == 2
+    assert text.count("(seen)") == 2  # shared resource + leaf prompt (via diamond)
+
+
+def test_tree_json_tags_resource_nodes_and_edges(tmp_path):
+    """Structured output carries ``kind`` on nodes and edges."""
+    import io, json as _json
+    from stemmata.cli import run as cli_run
+    from stemmata.cache import Cache as _Cache
+
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "root", "path": "prompts/root.yaml"}],
+                "resources": [
+                    {"id": "note", "path": "resources/note.md", "contentType": "markdown"},
+                ],
+            },
+            {
+                "prompts/root.yaml": b'body: "${resource:../resources/note.md}"\n',
+                "resources/note.md": b"hi\n",
+            },
+        ),
+    }
+    cache = _Cache(root=tmp_path / "cache")
+    for (name, ver), data in tarballs.items():
+        cache.install_tarball(name, ver, data)
+
+    out, err = io.StringIO(), io.StringIO()
+    rc = cli_run(
+        ["--offline", "--output", "json", "--cache-dir", str(tmp_path / "cache"),
+         "tree", "@acme/p@1.0.0#root"],
+        stdout=out, stderr=err,
+    )
+    assert rc == 0, out.getvalue() + err.getvalue()
+    env = _json.loads(out.getvalue())
+    nodes = {n["id"]: n for n in env["result"]["nodes"]}
+    assert nodes["@acme/p@1.0.0#root"]["kind"] == "prompt"
+    assert nodes["@acme/p@1.0.0#root"]["distance"] == 0
+    assert nodes["@acme/p@1.0.0#note"]["kind"] == "resource"
+    assert nodes["@acme/p@1.0.0#note"]["distance"] == 1
+    edges = env["result"]["edges"]
+    assert {
+        "from": "@acme/p@1.0.0#root",
+        "to": "@acme/p@1.0.0#note",
+        "kind": "resource",
+    } in edges
+
+
 # ---------------------------------------------------------------------------
 # validate surfaces resource errors even for prompts with no ancestors
 # ---------------------------------------------------------------------------

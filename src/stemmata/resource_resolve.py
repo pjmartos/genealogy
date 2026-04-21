@@ -213,6 +213,8 @@ def build_resource_binding(graph, session) -> ResourceBinding:
     for nid in graph.order:
         prompt_node = graph.nodes[nid]
         ref_manifest, ref_root, ref_entry_path = _prompt_referring_context(prompt_node, session)
+        prompt_direct: list[str] = []
+        prompt_seen: set[str] = set()
         for ref in collect_resource_refs(prompt_node.doc.namespace, file_fallback=prompt_node.file):
             coord, file_path = _resolve_body_to_coord(
                 ref.body,
@@ -223,7 +225,12 @@ def build_resource_binding(graph, session) -> ResourceBinding:
                 session=session,
             )
             binding.bindings[(ref.file, ref.body)] = coord.canonical
+            if coord.canonical not in prompt_seen:
+                prompt_direct.append(coord.canonical)
+                prompt_seen.add(coord.canonical)
             _schedule(coord, file_path)
+        if prompt_direct:
+            binding.prompt_resources[nid.canonical] = prompt_direct
 
     while to_visit:
         coord, file_path = to_visit.popleft()
@@ -251,6 +258,14 @@ def build_resource_binding(graph, session) -> ResourceBinding:
             children.append(child_coord.canonical)
             _schedule(child_coord, child_path)
         nodes[coord.canonical] = _ResourceNode(coord=coord, file_path=file_path, doc=doc, children=children)
+        unique_children: list[str] = []
+        unique_seen: set[str] = set()
+        for c in children:
+            if c not in unique_seen:
+                unique_children.append(c)
+                unique_seen.add(c)
+        binding.resource_children[coord.canonical] = unique_children
+        binding.resource_files[coord.canonical] = str(file_path)
 
     _detect_cycles(nodes)
     binding.flat_texts.update(_flatten_all(nodes))
