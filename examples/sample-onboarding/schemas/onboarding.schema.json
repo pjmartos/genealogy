@@ -3,7 +3,7 @@
   "title": "Onboarding prompt",
   "description": "Content contract for the fully resolved onboarding prompt.",
   "type": "object",
-  "required": ["vars", "database", "persona", "body"],
+  "required": ["vars", "database", "persona", "body", "playbook"],
   "properties": {
     "vars": {
       "type": "object",
@@ -36,6 +36,10 @@
       "additionalProperties": false
     },
     "body": {
+      "type": "string",
+      "minLength": 1
+    },
+    "playbook": {
       "type": "string",
       "minLength": 1
     },

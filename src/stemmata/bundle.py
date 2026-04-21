@@ -26,8 +26,8 @@ class BundleMember:
     is_dir: bool = False
 
 
-def _normalise_yaml_bytes(raw: bytes, *, file: str) -> bytes:
-    """Strip BOM and normalise CRLF -> LF for YAML payloads on publish."""
+def _normalise_payload_bytes(raw: bytes) -> bytes:
+    """Strip BOM and normalise CRLF -> LF for published text payloads."""
     if raw.startswith(_BOM_BYTES):
         raw = raw[len(_BOM_BYTES):]
     if b"\r\n" in raw or b"\r" in raw:
@@ -51,12 +51,15 @@ def collect_members(
     package_root: Path,
     extra_files: list[str],
     yaml_paths: list[str],
+    markdown_paths: list[str] | None = None,
 ) -> list[BundleMember]:
     """Collect tarball members from a publish source directory.
 
-    ``yaml_paths`` are POSIX-relative paths to YAML payload files (subject to
-    BOM/CRLF normalisation). ``extra_files`` are additional package-relative
-    files to ship verbatim (e.g. ``package.json``, ``README.md``, ``LICENSE``).
+    ``yaml_paths`` are POSIX-relative paths to YAML/JSON prompt payload files
+    (subject to BOM/CRLF normalisation). ``markdown_paths`` are POSIX-relative
+    paths to Markdown resource payload files (same hygiene rules).
+    ``extra_files`` are additional package-relative files to ship verbatim
+    (e.g. ``package.json``, ``README.md``, ``LICENSE``).
     """
     members: list[BundleMember] = []
     seen: set[str] = set()
@@ -94,14 +97,14 @@ def collect_members(
             )
         _add_file(rel, full.read_bytes())
 
-    for rel in yaml_paths:
+    def _add_payload(rel: str, *, kind: str) -> None:
         full = package_root / rel
         if not full.is_file():
             raise SchemaError(
-                f"prompt payload file declared by manifest does not exist: {rel}",
+                f"{kind} payload file declared by manifest does not exist: {rel}",
                 file=str(full),
                 field_name="path",
-                reason="missing_prompt_file",
+                reason=f"missing_{kind}_file",
             )
         if full.is_symlink():
             raise SchemaError(
@@ -110,9 +113,12 @@ def collect_members(
                 field_name="bundle",
                 reason="symlink_forbidden",
             )
-        raw = full.read_bytes()
-        normalised = _normalise_yaml_bytes(raw, file=str(full))
-        _add_file(rel, normalised)
+        _add_file(rel, _normalise_payload_bytes(full.read_bytes()))
+
+    for rel in yaml_paths:
+        _add_payload(rel, kind="prompt")
+    for rel in markdown_paths or []:
+        _add_payload(rel, kind="resource")
 
     members.sort(key=lambda m: m.arcname)
     return members

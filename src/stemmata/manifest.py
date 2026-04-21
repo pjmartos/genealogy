@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from stemmata.errors import SchemaError
@@ -41,6 +41,13 @@ class PromptEntry:
 
 
 @dataclass
+class ResourceEntry:
+    id: str
+    path: str
+    contentType: str
+
+
+@dataclass
 class Manifest:
     name: str
     version: str
@@ -48,6 +55,7 @@ class Manifest:
     license: str | None
     dependencies: dict[str, str]
     prompts: list[PromptEntry]
+    resources: list[ResourceEntry] = field(default_factory=list)
 
     def prompt_by_id(self, pid: str) -> PromptEntry | None:
         for p in self.prompts:
@@ -61,16 +69,28 @@ class Manifest:
                 return p
         return None
 
+    def resource_by_id(self, rid: str) -> ResourceEntry | None:
+        for r in self.resources:
+            if r.id == rid:
+                return r
+        return None
 
-def _entry_handle(entry: Any, idx: int) -> str:
+    def resource_by_path(self, path: str) -> ResourceEntry | None:
+        for r in self.resources:
+            if r.path == path:
+                return r
+        return None
+
+
+def _entry_handle(entry: Any, idx: int, *, array: str = "prompts") -> str:
     if isinstance(entry, dict):
         path = entry.get("path")
         if isinstance(path, str) and path:
-            return f"prompts[path={path!r}]"
+            return f"{array}[path={path!r}]"
         pid = entry.get("id")
         if isinstance(pid, str) and pid:
-            return f"prompts[id={pid!r}]"
-    return f"prompts[index={idx}]"
+            return f"{array}[id={pid!r}]"
+    return f"{array}[index={idx}]"
 
 
 def _derive_default_id(path: str, *, file: str) -> str:
@@ -263,6 +283,87 @@ def validate_manifest(data: dict[str, Any], *, file: str = "package.json") -> Ma
             )
         entries.append(PromptEntry(id=pid, path=path, contentType=content_type))
 
+    resources_raw = data.get("resources")
+    resources: list[ResourceEntry] = []
+    if resources_raw is not None:
+        if not isinstance(resources_raw, list):
+            raise SchemaError(
+                "package.json 'resources' must be an array",
+                file=file,
+                field_name="resources",
+                reason="invalid_resources",
+            )
+        if len(resources_raw) == 0:
+            raise SchemaError(
+                "package.json 'resources' array, when present, must not be empty",
+                file=file,
+                field_name="resources",
+                reason="empty_resources",
+            )
+        for idx, entry in enumerate(resources_raw):
+            handle = _entry_handle(entry, idx, array="resources")
+            if not isinstance(entry, dict):
+                raise SchemaError(
+                    f"{handle} must be an object",
+                    file=file,
+                    field_name=handle,
+                    reason="invalid_entry",
+                )
+            path = entry.get("path")
+            if not isinstance(path, str) or not path:
+                raise SchemaError(
+                    f"{handle}.path must be a non-empty string",
+                    file=file,
+                    field_name=f"{handle}.path",
+                    reason="invalid_path",
+                )
+            if not _ASCII_PRINTABLE_RE.match(path):
+                raise SchemaError(
+                    f"resource entry path={path!r} contains non-printable-ASCII characters",
+                    file=file,
+                    field_name=f"resources[path={path!r}].path",
+                    reason="non_ascii_path",
+                )
+            case_key = path.casefold()
+            for existing in seen_paths:
+                if existing.casefold() == case_key:
+                    raise SchemaError(
+                        f"resource entry path={path!r} collides with path={existing!r} under case-folding",
+                        file=file,
+                        field_name=f"resources[path={path!r}].path",
+                        reason="path_case_collision",
+                    )
+            seen_paths.add(path)
+
+            rid = entry.get("id")
+            if rid is None:
+                rid = _derive_default_id(path, file=file)
+            elif not isinstance(rid, str) or not _ID_RE.match(rid):
+                raise SchemaError(
+                    f"resource entry path={path!r} has id {rid!r} which does not match '[a-z0-9][a-z0-9_-]*'",
+                    file=file,
+                    field_name=f"resources[path={path!r}].id",
+                    reason="invalid_id",
+                )
+            if rid in seen_ids:
+                raise SchemaError(
+                    f"duplicate resource id {rid!r} in manifest (for path={path!r})",
+                    file=file,
+                    field_name=f"resources[path={path!r}].id",
+                    reason="duplicate_id",
+                )
+            seen_ids.add(rid)
+
+            content_type = entry.get("contentType")
+            if content_type != "markdown":
+                raise SchemaError(
+                    f"resource entry path={path!r} has contentType {content_type!r}; must be 'markdown'",
+                    file=file,
+                    field_name=f"resources[path={path!r}].contentType",
+                    reason="invalid_content_type",
+                )
+            resources.append(ResourceEntry(id=rid, path=path, contentType=content_type))
+
     return Manifest(
         name=name,
         version=version,
@@ -270,4 +371,5 @@ def validate_manifest(data: dict[str, Any], *, file: str = "package.json") -> Ma
         license=license_,
         dependencies=dependencies,
         prompts=entries,
+        resources=resources,
     )

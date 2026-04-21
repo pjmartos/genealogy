@@ -26,6 +26,7 @@ Prompt reuse across repositories is a mess. You copy a YAML prompt into a new pr
 - **Hierarchical composition**: prompts declare `ancestors` as paths or `(package, version, prompt)` coordinates; the full transitive closure is resolved eagerly via breadth-first search.
 - **Deterministic merging**: nearest-wins for scalars and lists, deep-merge for maps, with breadth-first search distance plus reference occurring-ordering (for breaking ties) so the output is reproducible.
 - **Placeholder interpolation**: `${path}` references resolve against the merged namespace, with structural, textual, and list-splat forms.
+- **Markdown resource embedding**: packages may ship Markdown payloads alongside prompts and splice them in as opaque text via `${resource:...}`, resolved eagerly on the same cache and registry rails as prompts.
 - **npm registry transport**: speaks the standard npm REST API; credentials read from `~/.npmrc`.
 
 ## Installation
@@ -90,7 +91,7 @@ On success, stdout carries the resolved YAML (or a JSON envelope with `{root, co
 
 ### `publish [path]`
 
-Builds and uploads the package at `path` (default `.`) to the registry routed by `~/.npmrc`. Before any bytes leave the machine, every prompt listed in `package.json` is checked for: (1) ancestor cycles, (2) intra-document type conflicts, (3) placeholder resolvability against the fully resolved namespace, (4) `dependencies` consistency with the cross-package references found in the prompts, (5) manifest closure under relative-path references — every local `ancestors` entry must resolve to a path that is itself declared in `prompts`, since only manifest-listed files are bundled, and (6) `$schema` validation against the prompt's content contract. All errors discovered in the pass are aggregated into a single envelope; the headline exit code is the most severe one (cycle > schema > reference > merge > placeholder).
+Builds and uploads the package at `path` (default `.`) to the registry routed by `~/.npmrc`. Before any bytes leave the machine, every prompt listed in `package.json` is checked for: (1) ancestor cycles, (2) intra-document type conflicts, (3) placeholder resolvability against the fully resolved namespace, (4) `dependencies` consistency with the cross-package references found in the prompts (including those inside `${resource:...}` placeholders), (5) manifest closure under relative-path references — every local `ancestors` entry must resolve to a path that is itself declared in `prompts`, since only manifest-listed files are bundled, (6) `$schema` validation against the prompt's content contract, and (7) resource-graph integrity — every `${resource:...}` occupies an allowed position, every local resource reference resolves to an entry in the `resources` array, and the Markdown-embedding graph contains no cycles. All errors discovered in the pass are aggregated into a single envelope; the headline exit code is the most severe one (cycle > schema > reference > merge > placeholder).
 
 Flags: `--dry-run` (build the tarball but skip upload), `--strict-schema` (treat unfetchable / unvalidated `$schema` as an error rather than a warning), `--tarball <path>` (write the built tarball to `path`). The tarball is deterministic: identical inputs produce byte-identical output.
 
@@ -166,13 +167,20 @@ body: |
   "license": "UNLICENSED",
   "dependencies": { "@acme/common": "1.0.4" },
   "prompts": [
-    { "id": "base",       "path": "base.yaml",             "contentType": "yaml" },
-    { "id": "onboarding", "path": "extra/onboarding.yaml", "contentType": "yaml" }
+    { "id": "base",       "path": "prompts/base.yaml",             "contentType": "yaml" },
+    { "id": "onboarding", "path": "prompts/extra/onboarding.yaml", "contentType": "yaml" }
+  ],
+  "resources": [
+    { "id": "overview", "path": "resources/overview.md", "contentType": "markdown" }
   ]
 }
 ```
 
-`name` must be `@<scope>/<n>`. `version` is strict SemVer, no ranges. `prompts` is non-empty; `id` defaults to basename without extension and must match `[a-z0-9][a-z0-9_-]*`.
+`name` must be `@<scope>/<n>`. `version` is strict SemVer, no ranges. `prompts` is non-empty; `id` defaults to basename without extension and must match `[a-z0-9][a-z0-9_-]*`. `resources` is optional; ids, paths, and case-folded path uniqueness are shared across the union of `prompts` and `resources`.
+
+### Markdown resources
+
+Prompts may embed opaque Markdown payloads via `${resource:<POSIX-relative-path>}` (same-package) or `${resource:@<scope>/<name>@<version>#<id>}` (coordinate). The reference must stand alone — either as the sole content of a line inside a block scalar or a Markdown file, or as the entire trimmed text of a flow-style YAML scalar or JSON string. Resource payloads are substituted verbatim after ancestor-namespace interpolation; they do not contribute keys to the merged namespace and any `${...}` sequences inside them are left literal.
 
 ## Merge Semantics
 
@@ -195,19 +203,19 @@ For the full interpolation reference (structural vs. textual placeholders, list 
 
 ## Exit Codes
 
-| Code | Meaning                             |
-|------|-------------------------------------|
-| `0`  | Success                             |
-| `1`  | Generic / unexpected failure        |
-| `2`  | Usage error                         |
-| `10` | Schema validation error             |
-| `11` | Unknown ancestor or prompt id       |
-| `12` | Cycle detected                      |
-| `14` | Unresolvable placeholder            |
-| `15` | Merge / interpolation type mismatch |
-| `20` | Network / registry error            |
-| `21` | Cache error                         |
-| `22` | Offline-mode violation              |
+| Code | Meaning                                         |
+|------|-------------------------------------------------|
+| `0`  | Success                                         |
+| `1`  | Generic / unexpected failure                    |
+| `2`  | Usage error                                     |
+| `10` | Schema validation error                         |
+| `11` | Unknown ancestor, prompt, or resource reference |
+| `12` | Cycle detected (ancestor or resource graph)     |
+| `14` | Unresolvable placeholder                        |
+| `15` | Merge / interpolation type mismatch             |
+| `20` | Network / registry error                        |
+| `21` | Cache error                                     |
+| `22` | Offline-mode violation                          |
 
 On failure, stdout always carries a JSON error envelope with `{status, exit_code, command, error: {code, category, message, ...}}` regardless of `--output`. Stderr gets a single-line human summary.
 

@@ -63,22 +63,44 @@ class SchemaError(PromptCliError):
 
 
 class ReferenceError_(PromptCliError):
-    def __init__(self, message: str, *, file: str | None, line: int | None, column: int | None, reference: str, searched_in: str):
+    def __init__(
+        self,
+        message: str,
+        *,
+        file: str | None,
+        line: int | None,
+        column: int | None,
+        reference: str,
+        searched_in: str,
+        kind: str = "ancestor",
+        reason: str = "missing",
+    ):
         super().__init__(
             EXIT_REFERENCE,
             message,
             {"file": file, "line": line, "column": column},
-            {"reference": reference, "searched_in": searched_in},
+            {
+                "reference": reference,
+                "searched_in": searched_in,
+                "kind": kind,
+                "reason": reason,
+            },
         )
 
 
 class CycleError(PromptCliError):
-    def __init__(self, nodes: list[dict[str, Any]], cycle_ids: list[str]):
+    def __init__(
+        self,
+        nodes: list[dict[str, Any]],
+        cycle_ids: list[str],
+        *,
+        kind: str = "ancestor",
+    ):
         super().__init__(
             EXIT_CYCLE,
             f"Cycle detected: {' -> '.join(cycle_ids) if cycle_ids else ''}",
             nodes,
-            {"cycle": cycle_ids},
+            {"cycle": cycle_ids, "kind": kind},
         )
 
 

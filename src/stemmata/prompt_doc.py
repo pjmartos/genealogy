@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import posixpath
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from stemmata.errors import SchemaError
 from stemmata.json_loader import load_json_with_positions
 from stemmata.manifest import is_scoped_name, is_semver
-from stemmata.yaml_loader import load_with_positions
+from stemmata.markdown_loader import RESOURCE_RE, mask_escapes
+from stemmata.yaml_loader import load_with_positions, scalar_meta
+
+
+_EMPTY_RESOURCE_RE = re.compile(r"\$\{resource:\s*\}")
 
 
 RESERVED_KEYS = {"ancestors", "$schema"}
@@ -109,15 +114,27 @@ AncestorRef = PathRef | CoordRef
 
 
 @dataclass
+class ResourceRefInPrompt:
+    body: str
+    file: str
+    line: int | None
+    column: int | None
+
+
+@dataclass
 class PromptDocument:
     file: str
     data: dict[str, Any]
     ancestors: list[AncestorRef]
     schema_uri: str | None
     namespace: dict[str, Any] = field(default_factory=dict)
+    resource_refs: list[ResourceRefInPrompt] = field(default_factory=list)
 
 
 def _validate_rel_path(raw: str, *, file: str, line: int | None, column: int | None) -> None:
+    # Escape-root is context-dependent (depends on the referring file's depth
+    # in the package) and is enforced at resolution time; only absolutes are
+    # rejectable purely from the raw string.
     if raw.startswith("/"):
         raise SchemaError(
             f"relative ancestor reference must not be absolute: {raw!r}",
@@ -127,26 +144,120 @@ def _validate_rel_path(raw: str, *, file: str, line: int | None, column: int | N
             field_name="ancestors",
             reason="absolute_path",
         )
-    parts = raw.split("/")
-    depth = 0
-    for p in parts:
-        if p == "..":
-            depth -= 1
-            if depth < 0:
-                raise SchemaError(
-                    f"relative ancestor reference escapes package root: {raw!r}",
-                    file=file,
-                    line=line,
-                    column=column,
-                    field_name="ancestors",
-                    reason="escape_root",
-                )
-        elif p and p != ".":
-            depth += 1
 
 
 def _is_json_file(file: str) -> bool:
     return file.lower().endswith(".json")
+
+
+def _raise_resource(file: str, line: int | None, column: int | None, *, reason: str, msg: str) -> None:
+    raise SchemaError(msg, file=file, line=line, column=column, field_name="<resource>", reason=reason)
+
+
+def _iter_scalar_refs(value: str) -> list[tuple[str, int, int]]:
+    """Yield (body, line_offset, col_0based) for each unescaped reference."""
+    out: list[tuple[str, int, int]] = []
+    for m in RESOURCE_RE.finditer(mask_escapes(value)):
+        line_off = value.count("\n", 0, m.start())
+        col = m.start() - (value.rfind("\n", 0, m.start()) + 1)
+        out.append((m.group(1), line_off, col))
+    return out
+
+
+def _validate_resource_positions_in_scalar(value: str, *, file_fallback: str, in_key: bool) -> None:
+    if "${resource:" not in value:
+        return
+    meta_file, meta_line, meta_col, is_flow = scalar_meta(value)
+    src = meta_file or file_fallback
+    if in_key:
+        _raise_resource(src, meta_line, meta_col, reason="resource_in_key",
+                        msg=f"${{resource:...}} is not allowed inside mapping keys ({src}:{meta_line})")
+    masked = mask_escapes(value)
+    empty_match = _EMPTY_RESOURCE_RE.search(masked)
+    if empty_match is not None:
+        line_off = value.count("\n", 0, empty_match.start())
+        abs_line = (meta_line or 1) + line_off
+        col = empty_match.start() - (value.rfind("\n", 0, empty_match.start()) + 1) + 1
+        _raise_resource(src, abs_line, col, reason="resource_empty_body",
+                        msg=f"${{resource:}} has empty body ({src}:{abs_line})")
+    matches = list(RESOURCE_RE.finditer(masked))
+    if not matches:
+        return
+    if is_flow:
+        if len(matches) != 1:
+            _raise_resource(src, meta_line, meta_col, reason="resource_multiple_in_flow",
+                            msg=f"flow-style scalar contains more than one ${{resource:...}} reference ({src}:{meta_line})")
+        m = matches[0]
+        if value.strip() != m.group(0):
+            _raise_resource(src, meta_line, meta_col, reason="resource_not_exact_in_flow",
+                            msg=f"${{resource:...}} in a flow scalar must be the entire trimmed content ({src}:{meta_line})")
+        if not m.group(1).strip():
+            _raise_resource(src, meta_line, meta_col, reason="resource_empty_body",
+                            msg=f"${{resource:}} has empty body ({src}:{meta_line})")
+        return
+    base = meta_line or 1
+    for line_idx, line in enumerate(value.split("\n")):
+        line_matches = list(RESOURCE_RE.finditer(mask_escapes(line)))
+        if not line_matches:
+            continue
+        abs_line = base + line_idx
+        if len(line_matches) > 1:
+            _raise_resource(src, abs_line, line_matches[1].start() + 1, reason="resource_multiple_per_line",
+                            msg=f"multiple ${{resource:...}} on one block-scalar line ({src}:{abs_line})")
+        m = line_matches[0]
+        col = m.start() + 1
+        if m.start() != 0 or m.end() != len(line):
+            _raise_resource(src, abs_line, col, reason="resource_not_line_exclusive",
+                            msg=f"${{resource:...}} in block scalar must occupy a whole line with no surrounding text ({src}:{abs_line})")
+        if not m.group(1).strip():
+            _raise_resource(src, abs_line, col, reason="resource_empty_body",
+                            msg=f"${{resource:}} has empty body ({src}:{abs_line})")
+
+
+def _walk_scalars(node: Any, visit) -> None:
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(k, str):
+                visit(k, in_key=True)
+            _walk_scalars(v, visit)
+    elif isinstance(node, list):
+        for item in node:
+            _walk_scalars(item, visit)
+    elif isinstance(node, str):
+        visit(node, in_key=False)
+
+
+def _walk_validate_resource_positions(node: Any, *, file_fallback: str) -> None:
+    def visit(value: str, *, in_key: bool) -> None:
+        _validate_resource_positions_in_scalar(value, file_fallback=file_fallback, in_key=in_key)
+    _walk_scalars(node, visit)
+
+
+def collect_resource_refs(namespace: Any, *, file_fallback: str) -> list[ResourceRefInPrompt]:
+    """Walk *namespace* and collect every ``${resource:...}`` reference.
+
+    Called by the resolver after ``attach_file`` has tagged every scalar with
+    its runtime file key, so the collected entries carry binding keys that
+    match ``scalar_meta(s)[0]`` at interpolation time.
+    """
+    refs: list[ResourceRefInPrompt] = []
+
+    def visit(value: str, *, in_key: bool) -> None:
+        if in_key or "${resource:" not in value:
+            return
+        meta_file, meta_line, meta_col, _ = scalar_meta(value)
+        src = meta_file or file_fallback
+        base = meta_line or 1
+        for body, line_off, col in _iter_scalar_refs(value):
+            refs.append(ResourceRefInPrompt(
+                body=body.strip(),
+                file=src,
+                line=base + line_off,
+                column=(col + 1) if line_off > 0 else (meta_col or (col + 1)),
+            ))
+
+    _walk_scalars(namespace, visit)
+    return refs
 
 
 def parse_prompt(text: str, *, file: str, strict: bool = True, validate_paths: bool = True) -> PromptDocument:
@@ -240,6 +351,7 @@ def parse_prompt(text: str, *, file: str, strict: bool = True, validate_paths: b
         {k: v for k, v in data.items() if k not in RESERVED_KEYS},
         file=file,
     )
+    _walk_validate_resource_positions(namespace, file_fallback=file)
     return PromptDocument(
         file=file,
         data=data,

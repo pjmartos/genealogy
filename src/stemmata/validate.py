@@ -16,6 +16,7 @@ from stemmata.resolver import (
     resolve_from_document,
     resolve_graph,
 )
+from stemmata.resource_resolve import build_resource_binding
 from stemmata.schema_check import (
     SchemaCheckOptions,
     resolve_schema_uri,
@@ -46,9 +47,9 @@ def discover_files(target: str) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 def _resolve_pipeline(
-    graph, # ResolvedGraph
+    graph, session, # ResolvedGraph, Session
 ) -> tuple[Any, Any]:
-    """Run merge + interpolate on a resolved graph.
+    """Run merge + interpolate (including resource substitution) on a resolved graph.
 
     Returns ``(resolved_namespace, position_namespace)``.
     """
@@ -59,7 +60,8 @@ def _resolve_pipeline(
     layers = [Layer(canonical_id=nid.canonical, data=graph.nodes[nid].doc.namespace)
               for nid in order]
     root_file = graph.nodes[graph.root_id].file
-    resolved = interpolate(merged, layers, root_file=root_file)
+    resources = build_resource_binding(graph, session)
+    resolved = interpolate(merged, layers, root_file=root_file, resources=resources)
     position_ns = graph.nodes[graph.root_id].doc.namespace
     return resolved, position_ns
 
@@ -96,8 +98,9 @@ def _validate_yaml_file(
         schema_uri = resolve_schema_uri(raw_uri, file_str)
         errors: list[PromptCliError] = []
         try:
-            graph = resolve_graph(file_str, session_factory())
-            resolved, position_ns = _resolve_pipeline(graph)
+            session = session_factory()
+            graph = resolve_graph(file_str, session)
+            resolved, position_ns = _resolve_pipeline(graph, session)
         except PromptCliError as e:
             return 1, [e]
         errors.extend(validate_against_schema(
@@ -128,18 +131,17 @@ def _validate_yaml_file(
             all_errors.append(e)
             continue
 
+        # Use the ORIGINAL multi-doc data for positions: _dump_for_reparse resets
+        # scalar line numbers, but schema violations must point at absolute lines.
         position_ns = {k: v for k, v in data.items() if k not in RESERVED_KEYS}
-        if doc.ancestors:
-            try:
-                graph = resolve_from_document(doc, file_str, session_factory())
-                resolved, _ = _resolve_pipeline(graph)
-                position_ns = graph.nodes[graph.root_id].doc.namespace
-            except PromptCliError as e:
-                _tag_document(e, doc_idx)
-                all_errors.append(e)
-                continue
-        else:
-            resolved = doc.namespace
+        try:
+            session = session_factory()
+            graph = resolve_from_document(doc, file_str, session)
+            resolved, _ = _resolve_pipeline(graph, session)
+        except PromptCliError as e:
+            _tag_document(e, doc_idx)
+            all_errors.append(e)
+            continue
 
         errs = validate_against_schema(
             resolved, schema_uri, file=file_str, opts=schema_opts,
@@ -176,15 +178,12 @@ def _validate_json_file(
     schema_uri = resolve_schema_uri(raw_uri, file_str)
 
     errors: list[PromptCliError] = []
-    if doc.ancestors:
-        try:
-            graph = resolve_graph(file_str, session_factory())
-            resolved, position_ns = _resolve_pipeline(graph)
-        except PromptCliError as e:
-            return 1, [e]
-    else:
-        resolved = doc.namespace
-        position_ns = doc.namespace
+    try:
+        session = session_factory()
+        graph = resolve_graph(file_str, session)
+        resolved, position_ns = _resolve_pipeline(graph, session)
+    except PromptCliError as e:
+        return 1, [e]
 
     errors.extend(validate_against_schema(
         resolved, schema_uri, file=file_str, opts=schema_opts,

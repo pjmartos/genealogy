@@ -1,0 +1,495 @@
+"""End-to-end tests for ``${resource:...}`` Markdown embedding"""
+import io
+import json
+import tarfile
+
+import pytest
+
+from stemmata.cache import Cache
+from stemmata.errors import (
+    CycleError,
+    PromptCliError,
+    ReferenceError_,
+    SchemaError,
+)
+from stemmata.interp import Layer, interpolate
+from stemmata.merge import merge_namespaces
+from stemmata.npmrc import NpmConfig
+from stemmata.registry import RegistryClient
+from stemmata.resolver import Session, layer_order, resolve_graph
+from stemmata.resource_resolve import build_resource_binding
+
+
+# ---------------------------------------------------------------------------
+# fake registry (mirrors the helper in test_resolver.py)
+# ---------------------------------------------------------------------------
+
+class _FakeRegistry(RegistryClient):
+    def __init__(self, tarballs):
+        super().__init__(config=NpmConfig(entries={}), offline=False)
+        self.tarballs = tarballs
+
+    def fetch_tarball(self, name, version):
+        key = (name, version)
+        if key not in self.tarballs:
+            from stemmata.errors import NetworkError
+            raise NetworkError(f"{name}@{version}", 404, "not found")
+        return f"fake://{name}/{version}", self.tarballs[key]
+
+
+def _pack(manifest: dict, files: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        data = json.dumps(manifest).encode()
+        ti = tarfile.TarInfo("package/package.json")
+        ti.size = len(data)
+        ti.mode = 0o644
+        tf.addfile(ti, io.BytesIO(data))
+        for relpath, content in files.items():
+            ti = tarfile.TarInfo(f"package/{relpath}")
+            ti.size = len(content)
+            ti.mode = 0o644
+            tf.addfile(ti, io.BytesIO(content))
+    return buf.getvalue()
+
+
+def _session(tmp_path, tarballs=None):
+    cache = Cache(root=tmp_path / "cache")
+    reg = _FakeRegistry(tarballs or {})
+    return Session(cache=cache, registry=reg)
+
+
+def _resolve(tmp_path, target, tarballs=None):
+    session = _session(tmp_path, tarballs=tarballs)
+    graph = resolve_graph(str(target), session)
+    order = layer_order(graph)
+    layers_data = [graph.nodes[nid].doc.namespace for nid in order]
+    merged = merge_namespaces(layers_data)
+    layers = [Layer(canonical_id=nid.canonical, data=graph.nodes[nid].doc.namespace)
+              for nid in order]
+    root_file = graph.nodes[graph.root_id].file
+    resources = build_resource_binding(graph, session)
+    return interpolate(merged, layers, root_file=root_file, resources=resources), graph
+
+
+# ---------------------------------------------------------------------------
+# local-file tests
+# ---------------------------------------------------------------------------
+
+def test_local_prompt_inside_package_resolves_relative_resource(tmp_path):
+    # Simulate an installed-package layout: package.json + prompts/ + resources/.
+    pkg_root = tmp_path / "pkg"
+    (pkg_root / "prompts").mkdir(parents=True)
+    (pkg_root / "resources").mkdir(parents=True)
+    (pkg_root / "package.json").write_text(json.dumps({
+        "name": "@acme/p",
+        "version": "1.0.0",
+        "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+        "resources": [{"id": "footer", "path": "resources/footer.md", "contentType": "markdown"}],
+    }))
+    (pkg_root / "prompts" / "base.yaml").write_bytes(
+        b"body: \"${resource:../resources/footer.md}\"\n"
+    )
+    (pkg_root / "resources" / "footer.md").write_bytes(b"hello from footer\n")
+
+    # Prime the session's package cache with this on-disk package so the
+    # resolver can collapse the local file's path to a package.
+    session = _session(tmp_path)
+    from stemmata.manifest import parse_manifest
+    manifest = parse_manifest((pkg_root / "package.json").read_text())
+    session._manifest_by_pkg[("@acme/p", "1.0.0")] = (manifest, pkg_root)
+
+    graph = resolve_graph(str(pkg_root / "prompts" / "base.yaml"), session)
+    order = layer_order(graph)
+    layers_data = [graph.nodes[nid].doc.namespace for nid in order]
+    merged = merge_namespaces(layers_data)
+    layers = [Layer(canonical_id=nid.canonical, data=graph.nodes[nid].doc.namespace)
+              for nid in order]
+    resources = build_resource_binding(graph, session)
+    resolved = interpolate(merged, layers, root_file=graph.nodes[graph.root_id].file, resources=resources)
+    assert resolved["body"] == "hello from footer\n"
+
+
+# ---------------------------------------------------------------------------
+# registry-backed tests
+# ---------------------------------------------------------------------------
+
+def test_registry_prompt_substitutes_entire_flow_scalar(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "body", "path": "resources/body.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b"greeting: \"${resource:../resources/body.md}\"\n",
+                "resources/body.md": b"hello world\n",
+            },
+        ),
+    }
+    resolved, graph = _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert resolved["greeting"] == "hello world\n"
+
+
+def test_registry_prompt_substitutes_inside_block_scalar(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "body", "path": "resources/body.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b"body: |\n  intro\n  ${resource:../resources/body.md}\n  outro\n",
+                "resources/body.md": b"middle\n",
+            },
+        ),
+    }
+    resolved, graph = _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert resolved["body"] == "intro\nmiddle\n\nouter\n".replace("outer", "outro")
+
+
+def test_coordinate_reference_across_packages(tmp_path):
+    tarballs = {
+        ("@acme/common", "1.0.4"): _pack(
+            {
+                "name": "@acme/common",
+                "version": "1.0.4",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "footer", "path": "resources/footer.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b"x: 1\n",
+                "resources/footer.md": b"shared footer\n",
+            },
+        ),
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "dependencies": {"@acme/common": "1.0.4"},
+                "prompts": [{"id": "root", "path": "prompts/root.yaml"}],
+            },
+            {
+                "prompts/root.yaml": b'footer: "${resource:@acme/common@1.0.4#footer}"\n',
+            },
+        ),
+    }
+    resolved, graph = _resolve(tmp_path, "@acme/p@1.0.0#root", tarballs)
+    assert resolved["footer"] == "shared footer\n"
+
+
+def test_markdown_embeds_markdown(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [
+                    {"id": "outer", "path": "resources/outer.md", "contentType": "markdown"},
+                    {"id": "inner", "path": "resources/inner.md", "contentType": "markdown"},
+                ],
+            },
+            {
+                "prompts/base.yaml": b'body: "${resource:../resources/outer.md}"\n',
+                "resources/outer.md": b"before\n${resource:inner.md}\nafter\n",
+                "resources/inner.md": b"INNER\n",
+            },
+        ),
+    }
+    resolved, graph = _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    # The line with ${resource:inner.md} is replaced by the inner flat text.
+    # outer content is: "before\n${resource:inner.md}\nafter\n"
+    # After substitution: "before\nINNER\n\nafter\n"
+    assert "INNER" in resolved["body"]
+    assert "before" in resolved["body"]
+    assert "after" in resolved["body"]
+
+
+def test_missing_resource_id_reports_reference_error(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "known", "path": "resources/known.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b'body: "${resource:@acme/p@1.0.0#unknown}"\n',
+                "resources/known.md": b"hello\n",
+            },
+        ),
+    }
+    with pytest.raises(ReferenceError_) as ei:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert ei.value.details["kind"] == "resource"
+    assert ei.value.details["reason"] == "missing"
+
+
+def test_type_mismatch_when_resource_points_at_prompt(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+            },
+            {
+                # References itself via resource syntax — target is a prompt, not a resource.
+                "prompts/base.yaml": b'body: "${resource:@acme/p@1.0.0#base}"\n',
+            },
+        ),
+    }
+    with pytest.raises(ReferenceError_) as ei:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert ei.value.details["kind"] == "resource"
+    assert ei.value.details["reason"] == "type_mismatch"
+
+
+def test_resource_cycle_detected(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [
+                    {"id": "a", "path": "resources/a.md", "contentType": "markdown"},
+                    {"id": "b", "path": "resources/b.md", "contentType": "markdown"},
+                ],
+            },
+            {
+                "prompts/base.yaml": b'body: "${resource:../resources/a.md}"\n',
+                "resources/a.md": b"${resource:b.md}\n",
+                "resources/b.md": b"${resource:a.md}\n",
+            },
+        ),
+    }
+    with pytest.raises(CycleError) as ei:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert ei.value.details["kind"] == "resource"
+
+
+def test_position_validation_rejects_midline_in_flow_scalar(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "x", "path": "resources/x.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b'body: "prefix ${resource:../resources/x.md} suffix"\n',
+                "resources/x.md": b"content\n",
+            },
+        ),
+    }
+    with pytest.raises(SchemaError) as ei:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert "resource" in ei.value.details["reason"]
+
+
+def test_position_validation_rejects_midline_in_block_scalar(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "x", "path": "resources/x.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b"body: |\n  prefix ${resource:../resources/x.md} suffix\n",
+                "resources/x.md": b"content\n",
+            },
+        ),
+    }
+    with pytest.raises(SchemaError) as ei:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert ei.value.details["reason"] == "resource_not_line_exclusive"
+
+
+def test_escaped_resource_placeholder_passes_through_as_literal(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+            },
+            {
+                "prompts/base.yaml": b'body: "literal $${resource:foo.md} text"\n',
+            },
+        ),
+    }
+    resolved, graph = _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert resolved["body"] == "literal ${resource:foo.md} text"
+
+
+def test_resource_placeholder_is_skipped_by_namespace_interp(tmp_path):
+    # A namespace placeholder ${foo} should be resolved; a ${resource:...}
+    # placeholder alongside should be handled by the resource pass without
+    # the namespace interp trying to look up "resource:foo.md".
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "f", "path": "resources/f.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b'foo: value\nbody: "${resource:../resources/f.md}"\n',
+                "resources/f.md": b"X\n",
+            },
+        ),
+    }
+    resolved, graph = _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert resolved["body"] == "X\n"
+
+
+def test_unresolvable_resource_in_local_file_without_package(tmp_path):
+    # A relative resource ref from a local file with no package manifest
+    # cannot be resolved.
+    p = tmp_path / "solo.yaml"
+    p.write_bytes(b'body: "${resource:foo.md}"\n')
+    with pytest.raises(ReferenceError_) as ei:
+        _resolve(tmp_path, p)
+    assert ei.value.details["kind"] == "resource"
+    assert ei.value.details["reason"] == "missing"
+
+
+# ---------------------------------------------------------------------------
+# tree subcommand surfaces resource errors (no rendering of resources, but
+# cycles / missing / type mismatches must still abort)
+# ---------------------------------------------------------------------------
+
+def test_tree_surfaces_resource_cycle(tmp_path):
+    import io, json as _json
+    from stemmata.cli import run as cli_run
+
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [
+                    {"id": "a", "path": "resources/a.md", "contentType": "markdown"},
+                    {"id": "b", "path": "resources/b.md", "contentType": "markdown"},
+                ],
+            },
+            {
+                "prompts/base.yaml": b'body: "${resource:../resources/a.md}"\n',
+                "resources/a.md": b"${resource:b.md}\n",
+                "resources/b.md": b"${resource:a.md}\n",
+            },
+        ),
+    }
+    # Prime the cache with the tarball so tree can read it offline.
+    from stemmata.cache import Cache as _Cache
+    cache = _Cache(root=tmp_path / "cache")
+    for (name, ver), data in tarballs.items():
+        cache.install_tarball(name, ver, data)
+
+    out, err = io.StringIO(), io.StringIO()
+    rc = cli_run(
+        ["--offline", "--cache-dir", str(tmp_path / "cache"), "--output", "json",
+         "tree", "@acme/p@1.0.0#base"],
+        stdout=out, stderr=err,
+    )
+    assert rc == 12  # EXIT_CYCLE
+    payload = _json.loads(out.getvalue())
+    assert payload["error"]["details"]["kind"] == "resource"
+
+
+def test_tree_surfaces_missing_resource_reference(tmp_path):
+    import io, json as _json
+    from stemmata.cli import run as cli_run
+    from stemmata.cache import Cache as _Cache
+
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "exists", "path": "resources/exists.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b'body: "${resource:@acme/p@1.0.0#missing}"\n',
+                "resources/exists.md": b"hi\n",
+            },
+        ),
+    }
+    cache = _Cache(root=tmp_path / "cache")
+    for (name, ver), data in tarballs.items():
+        cache.install_tarball(name, ver, data)
+
+    out, err = io.StringIO(), io.StringIO()
+    rc = cli_run(
+        ["--offline", "--cache-dir", str(tmp_path / "cache"), "--output", "json",
+         "tree", "@acme/p@1.0.0#base"],
+        stdout=out, stderr=err,
+    )
+    assert rc == 11  # EXIT_REFERENCE
+    payload = _json.loads(out.getvalue())
+    assert payload["error"]["details"]["kind"] == "resource"
+    assert payload["error"]["details"]["reason"] == "missing"
+
+
+def test_tree_still_renders_without_resource_refs(tmp_path):
+    """Tree must keep working for prompts that have zero resource refs."""
+    import io
+    from stemmata.cli import run as cli_run
+    from stemmata.cache import Cache as _Cache
+
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+            },
+            {"prompts/base.yaml": b"x: 1\n"},
+        ),
+    }
+    cache = _Cache(root=tmp_path / "cache")
+    for (name, ver), data in tarballs.items():
+        cache.install_tarball(name, ver, data)
+
+    out, err = io.StringIO(), io.StringIO()
+    rc = cli_run(
+        ["--offline", "--cache-dir", str(tmp_path / "cache"),
+         "tree", "@acme/p@1.0.0#base"],
+        stdout=out, stderr=err,
+    )
+    assert rc == 0
+    assert "@acme/p@1.0.0#base" in out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# validate surfaces resource errors even for prompts with no ancestors
+# ---------------------------------------------------------------------------
+
+def test_validate_surfaces_missing_resource_in_standalone_file(tmp_path):
+    import io
+    from stemmata.cli import run as cli_run
+
+    schema = '{"type": "object"}'
+    (tmp_path / "s.json").write_bytes(schema.encode())
+    prompt = b'$schema: "s.json"\nbody: "${resource:missing.md}"\n'
+    (tmp_path / "p.yaml").write_bytes(prompt)
+
+    out, err = io.StringIO(), io.StringIO()
+    rc = cli_run(["--output", "json", "validate", str(tmp_path / "p.yaml")],
+                 stdout=out, stderr=err)
+    # No ancestors, no package, and a dangling relative resource ref must
+    # still be caught at validate time.
+    assert rc == 11  # EXIT_REFERENCE

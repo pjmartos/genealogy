@@ -8,5 +8,9 @@
     { "id": "database",   "path": "prompts/database.yaml",   "contentType": "yaml" },
     { "id": "persona",    "path": "prompts/persona.yaml",    "contentType": "yaml" },
     { "id": "onboarding", "path": "prompts/onboarding.yaml", "contentType": "yaml" }
+  ],
+  "resources": [
+    { "id": "playbook", "path": "resources/playbook.md",          "contentType": "markdown" },
+    { "id": "safety",   "path": "resources/sections/safety.md",   "contentType": "markdown" }
   ]
 }

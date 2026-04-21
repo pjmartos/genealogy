@@ -29,6 +29,7 @@ from stemmata.npmrc import load_npmrc
 from stemmata.prompt_doc import RESERVED_KEYS
 from stemmata.registry import RegistryClient
 from stemmata.resolver import Session, layer_order, resolve_graph
+from stemmata.resource_resolve import build_resource_binding
 
 
 _DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(ms|s|m|h)?$")
@@ -191,7 +192,8 @@ def _resolve_coord(pkg: str, version: str, prompt_id: str, session: Session) -> 
     merged = merge_namespaces(layers_data, provenance=provenance)
     layers = [Layer(canonical_id=nid.canonical, data=graph.nodes[nid].doc.namespace) for nid in order]
     root_file = graph.nodes[graph.root_id].file
-    resolved = interpolate(merged, layers, root_file=root_file)
+    resources = build_resource_binding(graph, session)
+    resolved = interpolate(merged, layers, root_file=root_file, resources=resources)
     ancestors_payload = [
         {"canonical_id": nid.canonical, "distance": graph.distances[nid]}
         for nid in order
@@ -242,7 +244,8 @@ def _run_resolve(args: argparse.Namespace, stdout, stderr) -> int:
     layers = [Layer(canonical_id=nid.canonical, data=graph.nodes[nid].doc.namespace) for nid in order]
 
     root_file = graph.nodes[graph.root_id].file
-    resolved = interpolate(merged, layers, root_file=root_file)
+    resources = build_resource_binding(graph, session)
+    resolved = interpolate(merged, layers, root_file=root_file, resources=resources)
 
     out_mode = args.output or "yaml"
     if out_mode == "yaml":
@@ -319,6 +322,7 @@ def _run_tree(args: argparse.Namespace, stdout, stderr) -> int:
         deadline_handler_installed = True
     try:
         graph = resolve_graph(args.target, session)
+        build_resource_binding(graph, session)
     finally:
         if deadline_handler_installed:
             signal.setitimer(signal.ITIMER_REAL, 0)

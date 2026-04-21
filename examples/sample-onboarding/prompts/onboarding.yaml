@@ -16,6 +16,11 @@ manifest:
     - ${=capabilities}
     - "tail"
 
+# Structural ${resource:...} reference: the playbook Markdown file itself
+# embeds `resources/sections/safety.md` via `${resource:sections/safety.md}`,
+# so this key demonstrates Markdown-inside-Markdown composition.
+playbook: "${resource:../resources/playbook.md}"
+
 body: |
   ${persona.greeting}
   Connecting to ${database.dsn} (ssl=${database.ssl}, timeout=${vars.timeout_seconds}s).

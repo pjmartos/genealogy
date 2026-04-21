@@ -230,3 +230,38 @@ def test_json_empty_input():
 def test_json_malformed():
     with pytest.raises(SchemaError):
         parse_prompt("{bad", file="x.json")
+
+def test_resource_empty_body_in_yaml_flow_scalar_rejected():
+    with pytest.raises(SchemaError) as exc:
+        parse_prompt('body: "${resource:}"\n', file="x.yaml")
+    assert exc.value.details["reason"] == "resource_empty_body"
+
+
+def test_resource_whitespace_only_body_in_yaml_flow_scalar_rejected():
+    with pytest.raises(SchemaError) as exc:
+        parse_prompt('body: "${resource:   }"\n', file="x.yaml")
+    assert exc.value.details["reason"] == "resource_empty_body"
+
+
+def test_resource_empty_body_in_yaml_block_scalar_rejected():
+    text = "body: |\n  ${resource:}\n"
+    with pytest.raises(SchemaError) as exc:
+        parse_prompt(text, file="x.yaml")
+    assert exc.value.details["reason"] == "resource_empty_body"
+
+
+def test_resource_empty_body_in_json_string_rejected():
+    import json
+    with pytest.raises(SchemaError) as exc:
+        parse_prompt(json.dumps({"body": "${resource:}"}), file="x.json")
+    assert exc.value.details["reason"] == "resource_empty_body"
+
+
+def test_resource_non_empty_body_accepted():
+    doc = parse_prompt('body: "${resource:a.md}"\n', file="x.yaml")
+    assert doc.namespace == {"body": "${resource:a.md}"}
+
+
+def test_resource_escaped_empty_body_not_rejected():
+    doc = parse_prompt('body: "$${resource:}"\n', file="x.yaml")
+    assert doc.namespace == {"body": "$${resource:}"}

@@ -27,9 +27,11 @@ from stemmata.errors import (
 )
 from stemmata.interp import (
     Layer,
+    ResourceBinding,
     _exact_placeholder,
     _is_scalar,
     _parse_placeholder_tokens,
+    _resource_body,
     interpolate,
     lookup_with_provenance,
 )
@@ -38,6 +40,7 @@ from stemmata.merge import merge_namespaces
 from stemmata.npmrc import NpmConfig
 from stemmata.registry import RegistryClient
 from stemmata.resolver import Session, layer_order, resolve_graph
+from stemmata.resource_resolve import build_resource_binding
 from stemmata.schema_check import SchemaCheckOptions, resolve_schema_uri, validate_against_schema
 from stemmata.yaml_loader import scalar_meta
 
@@ -105,6 +108,8 @@ def _walk_collect_placeholder_errors(
     file, line, column, is_flow = scalar_meta(node)
     file = file or root_file
     exact, non_splat, inner_path = _exact_placeholder(node)
+    if exact and is_flow and _resource_body(inner_path) is not None:
+        return
     if exact and is_flow:
         path = inner_path.strip()
         value, status, provider, searched = lookup_with_provenance(namespace, layers, path)
@@ -123,6 +128,8 @@ def _walk_collect_placeholder_errors(
     tokens = _parse_placeholder_tokens(str(node))
     for kind, val in tokens:
         if kind != "ph":
+            continue
+        if _resource_body(val) is not None:
             continue
         inner = val
         if inner.startswith("="):
@@ -154,6 +161,7 @@ def _check_one_prompt(
     opts: PublishOptions,
     schema_opts: SchemaCheckOptions,
     config: NpmConfig,
+    publish_package: tuple[Manifest, Path] | None = None,
 ) -> list[PromptCliError]:
     """Run cycle / type / placeholder / $schema checks on a single prompt.
 
@@ -176,6 +184,11 @@ def _check_one_prompt(
         verbose=opts.verbose,
         stderr=opts.stderr,
     )
+    if publish_package is not None:
+        # Pre-register the local package so same-package relative ${resource:...}
+        # references resolve through its manifest before the tarball is published.
+        manifest, pkg_root = publish_package
+        session._manifest_by_pkg[(manifest.name, manifest.version)] = (manifest, pkg_root)
 
     try:
         graph = resolve_graph(str(prompt_path), session)
@@ -206,16 +219,24 @@ def _check_one_prompt(
     )
     errors.extend(placeholder_errors)
 
+    resources: ResourceBinding | None = None
+    resource_errors: list[PromptCliError] = []
+    try:
+        resources = build_resource_binding(graph, session)
+    except PromptCliError as e:
+        resource_errors.append(e)
+    errors.extend(resource_errors)
+
     schema_uri = graph.nodes[graph.root_id].doc.schema_uri
     if schema_uri:
         schema_uri = resolve_schema_uri(schema_uri, str(prompt_path))
         position_ns = graph.nodes[graph.root_id].doc.namespace
-        if placeholder_errors:
+        if placeholder_errors or resource_errors:
             schema_target = merged
         else:
             root_file = graph.nodes[graph.root_id].file
             try:
-                schema_target = interpolate(merged, layers, root_file=root_file)
+                schema_target = interpolate(merged, layers, root_file=root_file, resources=resources)
             except PromptCliError as e:
                 errors.append(e)
                 schema_target = merged
@@ -260,7 +281,10 @@ def run_publish(opts: PublishOptions) -> PublishResult:
         prompt_path = package_root / entry.path
         canonical = f"{manifest.name}@{manifest.version}#{entry.id}"
         checked_ids.append(canonical)
-        per_prompt = _check_one_prompt(prompt_path, canonical, opts, schema_opts, config)
+        per_prompt = _check_one_prompt(
+            prompt_path, canonical, opts, schema_opts, config,
+            publish_package=(manifest, package_root),
+        )
         aggregated.extend(per_prompt)
 
     aggregated.extend(check_consistency(manifest, package_root, manifest_file=str(manifest_file)))
@@ -273,7 +297,8 @@ def run_publish(opts: PublishOptions) -> PublishResult:
         if (package_root / optional).is_file():
             extra_files.append(optional)
     yaml_paths = [entry.path for entry in manifest.prompts]
-    members = collect_members(package_root, extra_files, yaml_paths)
+    markdown_paths = [entry.path for entry in manifest.resources]
+    members = collect_members(package_root, extra_files, yaml_paths, markdown_paths)
     tarball_bytes = build_tarball(members)
     integrity = integrity_sha512(tarball_bytes)
     shasum = shasum_sha1(tarball_bytes)

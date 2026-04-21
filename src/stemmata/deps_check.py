@@ -1,41 +1,80 @@
 from __future__ import annotations
 
+import posixpath
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 from stemmata.errors import PromptCliError, SchemaError
-from stemmata.manifest import Manifest
-from stemmata.prompt_doc import CoordRef, PathRef, parse_prompt, resolve_relative
+from stemmata.manifest import Manifest, PromptEntry, ResourceEntry
+from stemmata.markdown_loader import read_markdown
+from stemmata.prompt_doc import (
+    CoordRef,
+    PathRef,
+    collect_resource_refs,
+    parse_prompt,
+    resolve_relative,
+)
+from stemmata.resource_resolve import _parse_coordinate_body
 
 
-def collect_cross_package_refs(
-    manifest: Manifest,
-    package_root: Path,
-) -> set[tuple[str, str]]:
-    """Walk every prompt declared in the manifest, collect (package, version)
-    pairs from cross-package ancestor references.
+@dataclass
+class _ResourceUsage:
+    entry: PromptEntry | ResourceEntry
+    file: Path
+    body: str
+    line: int | None
+    column: int | None
+    kind: str  # "prompt" or "resource"
 
-    This is a static walk that only inspects the prompts shipped in *this*
-    package; it does not recurse into the resolved transitive closure.
-    only requires that the manifest's ``dependencies`` cover the closure of
-    cross-package references in the prompt payloads — and that closure starts
-    with what authors literally wrote in their own files.
+
+def _iter_resource_usage(manifest: Manifest, package_root: Path) -> Iterator[_ResourceUsage]:
+    """Yield every ``${resource:...}`` reference reachable from this package."""
+    for entry in manifest.prompts:
+        path = package_root / entry.path
+        if not path.is_file():
+            continue
+        try:
+            doc = parse_prompt(path.read_text(encoding="utf-8"), file=str(path), validate_paths=False)
+        except SchemaError:
+            continue
+        for rref in collect_resource_refs(doc.namespace, file_fallback=str(path)):
+            yield _ResourceUsage(entry, path, rref.body, rref.line, rref.column, "prompt")
+
+    for entry in manifest.resources:
+        path = package_root / entry.path
+        if not path.is_file():
+            continue
+        try:
+            md_doc = read_markdown(str(path), strict=False)
+        except SchemaError:
+            continue
+        for mref in md_doc.references:
+            yield _ResourceUsage(entry, path, mref.raw, mref.line, mref.column, "resource")
+
+
+def collect_cross_package_refs(manifest: Manifest, package_root: Path) -> set[tuple[str, str]]:
+    """Collect cross-package (name, version) pairs from ancestor and
+    ``${resource:...}`` references found in this package's payloads.
+
+    Used by :func:`check_consistency` to diff against ``package.json`` deps.
     """
     refs: set[tuple[str, str]] = set()
     for entry in manifest.prompts:
-        prompt_file = package_root / entry.path
-        if not prompt_file.is_file():
+        path = package_root / entry.path
+        if not path.is_file():
             continue
-        text = prompt_file.read_text(encoding="utf-8")
         try:
-            doc = parse_prompt(text, file=str(prompt_file), validate_paths=False)
+            doc = parse_prompt(path.read_text(encoding="utf-8"), file=str(path), validate_paths=False)
         except SchemaError:
-            # Schema problems are surfaced by the orchestrator's per-prompt
-            # check; here we silently skip so deps_check stays focused on
-            # what it is responsible for.
             continue
         for ref in doc.ancestors:
             if isinstance(ref, CoordRef):
                 refs.add((ref.package, ref.version))
+    for usage in _iter_resource_usage(manifest, package_root):
+        coord = _parse_coordinate_body(usage.body)
+        if coord is not None and coord[0] != manifest.name:
+            refs.add((coord[0], coord[1]))
     return refs
 
 
@@ -117,31 +156,36 @@ def check_local_refs(
     *,
     manifest_file: str,
 ) -> list[PromptCliError]:
-    """Ensure every relative-path ancestor in a manifest-declared prompt
-    resolves to a path that is itself declared in ``manifest.prompts``.
-
-    Only manifest-listed files are bundled into the publish tarball, so a
-    prompt that refers to a sibling YAML which is not in the manifest would
-    resolve fine in the author's source tree but fail after install: the
-    referenced file is missing from the package.
+    """Ensure every relative-path ancestor and every relative
+    ``${resource:...}`` reference in a manifest-declared file resolves to a
+    path that is itself declared in the manifest.
     """
     errors: list[PromptCliError] = []
-    declared_paths = {p.path.replace("\\", "/").casefold() for p in manifest.prompts}
+    declared_prompt_paths = {p.path.replace("\\", "/").casefold() for p in manifest.prompts}
+    declared_resource_paths = {r.path.replace("\\", "/").casefold() for r in manifest.resources}
+
+    def _resolve_local_resource(entry_path: str, body: str) -> str | None:
+        if body.startswith("/"):
+            return None
+        base_dir = posixpath.dirname(entry_path.replace("\\", "/"))
+        joined = posixpath.normpath(posixpath.join(base_dir, body))
+        if joined.startswith("..") or joined.startswith("/"):
+            return None
+        return joined
 
     for entry in manifest.prompts:
         prompt_file = package_root / entry.path
         if not prompt_file.is_file():
             continue
-        text = prompt_file.read_text(encoding="utf-8")
         try:
-            doc = parse_prompt(text, file=str(prompt_file), validate_paths=False)
+            doc = parse_prompt(prompt_file.read_text(encoding="utf-8"), file=str(prompt_file), validate_paths=False)
         except SchemaError:
             continue
         for ref in doc.ancestors:
             if not isinstance(ref, PathRef):
                 continue
             resolved = resolve_relative(entry.path, ref.raw)
-            if resolved.casefold() not in declared_paths:
+            if resolved.casefold() not in declared_prompt_paths:
                 errors.append(SchemaError(
                     f"prompt {entry.id!r} references local file {ref.raw!r} "
                     f"(resolved to {resolved!r}) which is not declared in "
@@ -150,4 +194,30 @@ def check_local_refs(
                     field_name="ancestors",
                     reason="undeclared_local_ref",
                 ))
+
+    for usage in _iter_resource_usage(manifest, package_root):
+        if _parse_coordinate_body(usage.body) is not None:
+            continue
+        resolved = _resolve_local_resource(usage.entry.path, usage.body)
+        if resolved is None:
+            errors.append(SchemaError(
+                f"{usage.kind} {usage.entry.id!r} has ${{resource:{usage.body}}} that escapes the package root or is absolute",
+                file=str(usage.file),
+                line=usage.line,
+                column=usage.column,
+                field_name="<resource>",
+                reason="resource_ref_escape",
+            ))
+            continue
+        if resolved.casefold() not in declared_resource_paths:
+            errors.append(SchemaError(
+                f"{usage.kind} {usage.entry.id!r} references resource {usage.body!r} "
+                f"(resolved to {resolved!r}) which is not declared in "
+                f"package.json 'resources'",
+                file=str(usage.file),
+                line=usage.line,
+                column=usage.column,
+                field_name="<resource>",
+                reason="undeclared_local_resource_ref",
+            ))
     return errors
