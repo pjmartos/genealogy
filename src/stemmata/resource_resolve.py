@@ -9,7 +9,7 @@ from pathlib import Path
 
 from stemmata.errors import CycleError, ReferenceError_, SchemaError
 from stemmata.interp import ResourceBinding
-from stemmata.manifest import Manifest, is_scoped_name, is_semver
+from stemmata.manifest import Manifest, is_scoped_name, is_semver, parse_manifest
 from stemmata.markdown_loader import MarkdownDocument, read_markdown
 from stemmata.prompt_doc import collect_resource_refs
 
@@ -122,6 +122,23 @@ def _find_package_for_local_file(file_path: str, session) -> tuple[Manifest, Pat
         if real == root_real or real.startswith(root_real + os.sep):
             rel = os.path.relpath(real, root_real).replace("\\", "/")
             return manifest, pkg_root, rel
+    current = Path(real).parent
+    while current.parent != current:
+        manifest_path = current / "package.json"
+        if manifest_path.is_file():
+            try:
+                manifest = parse_manifest(
+                    manifest_path.read_text(encoding="utf-8"),
+                    file=str(manifest_path),
+                )
+            except SchemaError:
+                return None
+            session._manifest_by_pkg.setdefault(
+                (manifest.name, manifest.version), (manifest, current)
+            )
+            rel = os.path.relpath(real, current).replace("\\", "/")
+            return manifest, current, rel
+        current = current.parent
     return None
 
 

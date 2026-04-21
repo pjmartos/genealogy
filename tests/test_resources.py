@@ -110,6 +110,32 @@ def test_local_prompt_inside_package_resolves_relative_resource(tmp_path):
     assert resolved["body"] == "hello from footer\n"
 
 
+def test_local_prompt_resource_resolves_without_preseeding_session(tmp_path):
+    pkg_root = tmp_path / "pkg"
+    (pkg_root / "prompts").mkdir(parents=True)
+    (pkg_root / "resources").mkdir(parents=True)
+    (pkg_root / "package.json").write_text(json.dumps({
+        "name": "@acme/p",
+        "version": "1.0.0",
+        "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+        "resources": [{"id": "footer", "path": "resources/footer.md", "contentType": "markdown"}],
+    }))
+    (pkg_root / "prompts" / "base.yaml").write_bytes(
+        b'body: "${resource:../resources/footer.md}"\n'
+    )
+    (pkg_root / "resources" / "footer.md").write_bytes(b"hello from footer\n")
+
+    session = _session(tmp_path)
+    graph = resolve_graph(str(pkg_root / "prompts" / "base.yaml"), session)
+    order = layer_order(graph)
+    merged = merge_namespaces([graph.nodes[nid].doc.namespace for nid in order])
+    layers = [Layer(canonical_id=nid.canonical, data=graph.nodes[nid].doc.namespace)
+              for nid in order]
+    resources = build_resource_binding(graph, session)
+    resolved = interpolate(merged, layers, root_file=graph.nodes[graph.root_id].file, resources=resources)
+    assert resolved["body"] == "hello from footer\n"
+
+
 # ---------------------------------------------------------------------------
 # registry-backed tests
 # ---------------------------------------------------------------------------
