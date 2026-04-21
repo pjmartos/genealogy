@@ -59,4 +59,5 @@ def to_text(envelope: dict[str, Any]) -> str:
     loc_str = ""
     if isinstance(loc, dict) and loc.get("file"):
         loc_str = f" at {loc['file']}:{loc.get('line') or '?'}"
-    return f"error[{err['code']}] {err['category']}{loc_str}: {err['message']}"
+    msg = " ".join(err["message"].split())
+    return f"error[{err['code']}] {err['category']}{loc_str}: {msg}"
