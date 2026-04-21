@@ -174,7 +174,7 @@ def _load_prompt_file(file_path: str, *, strict: bool = True) -> PromptDocument:
         )
     text = _read_payload_text(file_path, strict=strict)
     try:
-        doc = parse_prompt(text, file=file_path, strict=strict, validate_paths=False)
+        doc = parse_prompt(text, file=file_path, strict=strict, validate_paths=True)
     except SchemaError:
         raise
     attach_file(doc.namespace, file_path)

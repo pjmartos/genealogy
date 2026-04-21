@@ -493,3 +493,64 @@ def test_validate_surfaces_missing_resource_in_standalone_file(tmp_path):
     # No ancestors, no package, and a dangling relative resource ref must
     # still be caught at validate time.
     assert rc == 11  # EXIT_REFERENCE
+
+
+# ---------------------------------------------------------------------------
+# absolute-path resource reference rejection (mirrors Fix 7 for ancestors)
+# ---------------------------------------------------------------------------
+
+def test_absolute_path_resource_ref_rejected_in_yaml_prompt(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "body", "path": "resources/body.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b'greeting: "${resource:/abs/body.md}"\n',
+                "resources/body.md": b"hello\n",
+            },
+        ),
+    }
+    with pytest.raises(SchemaError) as exc:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert exc.value.code == 10
+    assert exc.value.details["reason"] == "absolute_path"
+
+
+def test_absolute_path_resource_ref_rejected_inside_markdown(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [
+                    {"id": "a", "path": "resources/a.md", "contentType": "markdown"},
+                    {"id": "b", "path": "resources/b.md", "contentType": "markdown"},
+                ],
+            },
+            {
+                "prompts/base.yaml": b'body: "${resource:../resources/a.md}"\n',
+                "resources/a.md": b"header\n${resource:/abs/b.md}\nfooter\n",
+                "resources/b.md": b"b\n",
+            },
+        ),
+    }
+    with pytest.raises(SchemaError) as exc:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert exc.value.code == 10
+    assert exc.value.details["reason"] == "absolute_path"
+
+
+def test_absolute_path_resource_ref_rejected_even_without_package_context(tmp_path):
+    root = tmp_path / "root.yaml"
+    root.write_text('body: "${resource:/abs/foo.md}"\n')
+    session = _session(tmp_path)
+    graph = resolve_graph(str(root), session)
+    with pytest.raises(SchemaError) as exc:
+        build_resource_binding(graph, session)
+    assert exc.value.code == 10
+    assert exc.value.details["reason"] == "absolute_path"

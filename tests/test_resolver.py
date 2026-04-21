@@ -99,6 +99,28 @@ def test_local_missing_reference(tmp_path):
         resolve_graph(str(p), session)
 
 
+def test_local_root_rejects_absolute_ancestor_path(tmp_path):
+    p = tmp_path / "root.yaml"
+    p.write_text("ancestors:\n  - /abs/foo.yaml\nkey: 1\n")
+    session = _session(tmp_path)
+    with pytest.raises(SchemaError) as exc:
+        resolve_graph(str(p), session)
+    assert exc.value.code == 10
+    assert exc.value.details["reason"] == "absolute_path"
+
+
+def test_local_root_rejects_absolute_ancestor_path_via_relative_ref(tmp_path):
+    root = tmp_path / "root.yaml"
+    root.write_text("ancestors:\n  - ./mid.yaml\nkey: 1\n")
+    mid = tmp_path / "mid.yaml"
+    mid.write_text("ancestors:\n  - /abs/foo.yaml\nkey: 2\n")
+    session = _session(tmp_path)
+    with pytest.raises(SchemaError) as exc:
+        resolve_graph(str(root), session)
+    assert exc.value.code == 10
+    assert exc.value.details["reason"] == "absolute_path"
+
+
 def test_diamond_inheritance(tmp_path):
     x = tmp_path / "x.yaml"
     x.write_text("vars:\n  color: red\n")

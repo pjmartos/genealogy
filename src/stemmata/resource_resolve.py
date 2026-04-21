@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from stemmata.errors import CycleError, ReferenceError_
+from stemmata.errors import CycleError, ReferenceError_, SchemaError
 from stemmata.interp import ResourceBinding
 from stemmata.manifest import Manifest, is_scoped_name, is_semver
 from stemmata.markdown_loader import MarkdownDocument, read_markdown
@@ -91,11 +91,18 @@ def _resolve_body_to_coord(
         reason = "type_mismatch" if manifest.prompt_by_id(resource_id) is not None else "missing"
         raise _ref_error(body, referring_file=referring_file, searched_in=searched, reason=reason)
 
+    if body.startswith("/"):
+        raise SchemaError(
+            f"relative resource reference must not be absolute: {body!r}",
+            file=referring_file,
+            line=None,
+            column=None,
+            field_name="<resource>",
+            reason="absolute_path",
+        )
     if referring_manifest is None or referring_package_root is None or referring_entry_path is None:
         raise _ref_error(body, referring_file=referring_file, searched_in=referring_file, reason="missing")
     searched = f"{referring_manifest.name}@{referring_manifest.version}"
-    if body.startswith("/"):
-        raise _ref_error(body, referring_file=referring_file, searched_in=searched, reason="missing")
     base_dir = posixpath.dirname(referring_entry_path.replace("\\", "/"))
     joined = posixpath.normpath(posixpath.join(base_dir, body))
     if joined.startswith("..") or joined.startswith("/"):
