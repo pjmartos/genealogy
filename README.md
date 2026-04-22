@@ -66,6 +66,9 @@ stemmata cache clear
 
 # Scaffold a package.json for an existing directory of prompts and resources:
 stemmata init ./my-package
+
+# Install a local package into the cache so it can be resolved offline by coordinate:
+stemmata install ./my-package
 ```
 
 ## CLI Reference
@@ -141,6 +144,10 @@ root.yaml
 ### `init [path]`
 
 Scaffolds (or updates) a `package.json` at `path` (default `.`). Scans `./prompts` recursively for `.yaml`, `.yml`, and `.json` files and `./resources` recursively for `.md` files, deriving each entry's `id` from the basename and setting `contentType` from the extension. Entries are sorted alphabetically by path and rendered one-per-line.
+
+### `install [path]`
+
+Installs the package at `path` (default `.`) into the local cache.
 
 ### `cache clear`
 
