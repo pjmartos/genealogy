@@ -80,19 +80,21 @@ stemmata [GLOBAL FLAGS] <subcommand> [ARGS]
 
 ### Global flags
 
-| Flag                        | Default                    | Description                                                  |
-|-----------------------------|----------------------------|--------------------------------------------------------------|
-| `--output {yaml,json,text}` | `yaml` (`text` for `tree`) | Output format.                                               |
-| `--verbose`                 | off                        | Timestamped diagnostics on stderr.                           |
-| `--offline`                 | off                        | Forbid network access; exit `22` if a fetch would be needed. |
-| `--refresh`                 | off                        | Re-fetch artifacts even if cached.                           |
-| `--version`                 | —                          | Print version and exit.                                      |
+| Flag                        | Default                    | Description                                                                                  |
+|-----------------------------|----------------------------|----------------------------------------------------------------------------------------------|
+| `--output {yaml,json,text}` | `yaml` (`text` for `tree`) | Output format.                                                                               |
+| `--verbose`                 | off                        | Timestamped diagnostics on stderr.                                                           |
+| `--offline`                 | off                        | Forbid network access; exit `22` if a fetch would be needed.                                 |
+| `--refresh`                 | off                        | Re-fetch artifacts even if cached.                                                           |
+| `--cache-dir <path>`        | `~/.cache/stemmata`        | Override the cache root. Honours `$PROMPT_CLI_CACHE_DIR` when the flag is absent.            |
+| `--npmrc <path>`            | `~/.npmrc`                 | Override the npmrc file used for registry routing and credentials.                           |
+| `--version`                 | —                          | Print version and exit.                                                                      |
 
 ### `resolve <target>`
 
 Resolves a single prompt. Target is either a local path (`./prompts/onboarding.yaml`) or a registry coordinate (`@<scope>/<name>@<version>#<prompt-id>`).
 
-Resource limits: `--max-prompts` (default 1000), `--max-depth` (default 50), `--http-timeout` (default 30s), `--timeout` (default 5m).
+Resource limits: `--max-prompts` (default 1000), `--max-depth` (default 50), `--max-download-size` (default 64 MiB per package), `--max-total-size` (default 512 MiB per invocation), `--http-timeout` (default 30s), `--timeout` (default 5m).
 
 On success, stdout carries the resolved YAML (or a JSON envelope with `{root, content, ancestors[]}`). On failure, stdout carries a JSON error envelope regardless of `--output`, and stderr gets a one-line human-readable summary.
 
@@ -234,13 +236,13 @@ Semantics:
 
 Subcommand behaviour:
 
-| Command    | Unfilled abstracts present                                                                                                           |
-|------------|--------------------------------------------------------------------------------------------------------------------------------------|
-| `resolve`  | Hard-fails with exit `16`. The resolved artefact is not produced while any hole remains.                                             |
-| `validate` | Does **not** fail. Structural checks and cycle detection still run. Abstracts are reported under `abstracts` in the success payload. |
-| `publish`  | Does **not** fail. A `warning:` line is logged to stderr listing the unfilled abstracts, and each one is recorded under `abstracts` in the success payload. Schema validation is deferred for any prompt that still has holes. |
+| Command    | Unfilled abstracts present                                                                                                                                                                                                                                                                                           |
+|------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `resolve`  | Hard-fails with exit `16`. The resolved artefact is not produced while any hole remains.                                                                                                                                                                                                                             |
+| `validate` | Does **not** fail. Structural checks and cycle detection still run. Abstracts are reported under `abstracts` in the success payload.                                                                                                                                                                                 |
+| `publish`  | Does **not** fail. A `warning:` line is logged to stderr listing the unfilled abstracts, and each one is recorded under `abstracts` in the success payload. Schema validation is deferred for any prompt that still has holes.                                                                                       |
 | `describe` | Always works. Emits two labelled buckets per prompt: `abstracts.declared` (markers introduced by *this* prompt) and `abstracts.inherited` (declared in an ancestor and still unfilled here). When abstracts remain, `content` is the merged (pre-interpolation) namespace so the reader can see where the holes sit. |
-| `tree`     | Always works. Each prompt node is annotated with `[abstracts: a, b, c]` listing what markers it introduces; the JSON/YAML envelope adds `abstracts` to each node.                                                                  |
+| `tree`     | Always works. Each prompt node is annotated with `[abstracts: a, b, c]` listing what markers it introduces; the JSON/YAML envelope adds `abstracts` to each node.                                                                                                                                                    |
 
 ## Merge Semantics
 
