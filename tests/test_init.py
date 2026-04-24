@@ -2,8 +2,6 @@ import io
 import json
 from pathlib import Path
 
-import pytest
-
 from stemmata.cli import run
 from stemmata.errors import EXIT_OK, EXIT_SCHEMA, EXIT_USAGE
 
@@ -27,8 +25,8 @@ def test_init_creates_manifest_in_empty_dir(tmp_path):
     env = json.loads(cap.out.getvalue())
     assert env["result"]["created"] is True
     manifest = _read_manifest(target / "package.json")
-    assert manifest["name"] == "my-pkg"
-    assert manifest["version"] == "0.0.1.dev0"
+    assert manifest["name"] == "@your-scope/my-pkg"
+    assert manifest["version"] == "0.0.1"
     assert manifest["license"] == "Apache-2.0"
     assert manifest["prompts"] == []
     assert "resources" not in manifest
@@ -70,7 +68,7 @@ def test_init_defaults_to_current_dir(tmp_path, monkeypatch):
     code = run(["--output", "json", "init"], stdout=cap.out, stderr=cap.err)
     assert code == EXIT_OK, cap.err.getvalue()
     manifest = _read_manifest(tmp_path / "package.json")
-    assert manifest["name"] == tmp_path.name
+    assert manifest["name"] == f"@your-scope/{tmp_path.name.lower()}"
     assert manifest["prompts"][0]["path"] == "prompts/a.yaml"
 
 
@@ -126,8 +124,8 @@ def test_init_fills_in_missing_defaults_when_manifest_partial(tmp_path):
     code = run(["--output", "json", "init", str(tmp_path)], stdout=cap.out, stderr=cap.err)
     assert code == EXIT_OK, cap.err.getvalue()
     manifest = _read_manifest(tmp_path / "package.json")
-    assert manifest["name"] == tmp_path.name
-    assert manifest["version"] == "0.0.1.dev0"
+    assert manifest["name"] == f"@your-scope/{tmp_path.name.lower()}"
+    assert manifest["version"] == "0.0.1"
     assert manifest["license"] == "Apache-2.0"
     assert manifest["description"] == "x"
 
@@ -190,6 +188,37 @@ def test_init_renders_entries_single_line_with_aligned_fields(tmp_path):
     assert len(prompt_lines) == 2
     assert len({ln.index('"path":') for ln in prompt_lines}) == 1
     assert len({ln.index('"contentType":') for ln in prompt_lines}) == 1
+
+
+def test_init_default_name_is_scoped_and_sanitised(tmp_path):
+    target = tmp_path / "My Weird.Pkg!"
+    target.mkdir()
+    cap = _Capture()
+    code = run(["--output", "json", "init", str(target)], stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_OK, cap.err.getvalue()
+    manifest = _read_manifest(target / "package.json")
+    from stemmata.manifest import is_scoped_name, is_semver
+    assert manifest["name"].startswith("@your-scope/")
+    assert is_scoped_name(manifest["name"])
+    assert is_semver(manifest["version"])
+
+
+def test_init_scaffolded_manifest_is_publishable(tmp_path):
+    target = tmp_path / "scaffold-me"
+    target.mkdir()
+    (target / "prompts").mkdir()
+    (target / "prompts" / "hello.yaml").write_text("body: hi\n", encoding="utf-8")
+
+    init_cap = _Capture()
+    assert run(["init", str(target)], stdout=init_cap.out, stderr=init_cap.err) == EXIT_OK
+
+    pub_cap = _Capture()
+    code = run(["--output", "json", "publish", "--dry-run", str(target)],
+               stdout=pub_cap.out, stderr=pub_cap.err)
+    assert code == EXIT_OK, pub_cap.out.getvalue()
+    env = json.loads(pub_cap.out.getvalue())
+    assert env["result"]["name"].startswith("@your-scope/")
+    assert env["result"]["version"] == "0.0.1"
 
 
 def test_init_sorts_merged_entries_by_path(tmp_path):

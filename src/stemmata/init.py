@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,15 @@ from stemmata.manifest import _derive_default_id
 _YAML_EXTS = {".yaml", ".yml"}
 _JSON_EXTS = {".json"}
 _MARKDOWN_EXTS = {".md"}
+
+_NAME_BAD_CHAR_RE = re.compile(r"[^a-z0-9_-]+")
+
+
+def _default_scoped_name(dir_name: str) -> str:
+    cleaned = _NAME_BAD_CHAR_RE.sub("-", dir_name.lower()).strip("-_")
+    if not cleaned or not cleaned[0].isalnum():
+        cleaned = f"package-{cleaned}".rstrip("-_") if cleaned else "package"
+    return f"@your-scope/{cleaned}"
 
 
 @dataclass
@@ -156,9 +166,9 @@ def run_init(path: Path) -> InitResult:
             )
 
     existing_name = existing.get("name")
-    name = existing_name if isinstance(existing_name, str) and existing_name else base.name
+    name = existing_name if isinstance(existing_name, str) and existing_name else _default_scoped_name(base.name)
     existing_version = existing.get("version")
-    version = existing_version if isinstance(existing_version, str) and existing_version else "0.0.1.dev0"
+    version = existing_version if isinstance(existing_version, str) and existing_version else "0.0.1"
     existing_license = existing.get("license")
     license_ = existing_license if isinstance(existing_license, str) and existing_license else "Apache-2.0"
 
