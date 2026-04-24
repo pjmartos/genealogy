@@ -96,6 +96,8 @@ Resolves a single prompt. Target is either a local path (`./prompts/onboarding.y
 
 Resource limits: `--max-prompts` (default 1000), `--max-depth` (default 50), `--max-download-size` (default 64 MiB per package), `--max-total-size` (default 512 MiB per invocation), `--http-timeout` (default 30s), `--timeout` (default 5m).
 
+`--set <dotted-path>=<yaml-value>` overrides the merged value at that path. Repeatable; last-wins on duplicate paths. Values are parsed as YAML, so `--set port=5432` is an int, `--set enabled=true` is a bool, `--set tags=[a,b,c]` is a list, and `--set body=` is `null`. Overrides merge at BFS distance `-1` — nearer than the root prompt — so they beat every ancestor and can satisfy `${abstract:…}` markers. They show up in the JSON envelope's `ancestors[]` as `{canonical_id: "<overrides>", distance: -1}`. `--set` is only accepted by `resolve`.
+
 On success, stdout carries the resolved YAML (or a JSON envelope with `{root, content, ancestors[]}`). On failure, stdout carries a JSON error envelope regardless of `--output`, and stderr gets a one-line human-readable summary.
 
 ### `publish [path]`

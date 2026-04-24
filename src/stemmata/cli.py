@@ -34,6 +34,7 @@ from stemmata.interp import (
 from stemmata.manifest import is_scoped_name, is_semver
 from stemmata.merge import merge_namespaces
 from stemmata.npmrc import load_npmrc
+from stemmata.overrides import OVERRIDE_CANONICAL_ID, parse_set_flags
 from stemmata.prompt_doc import RESERVED_KEYS
 from stemmata.registry import RegistryClient
 from stemmata.resolver import Session, layer_order, resolve_graph
@@ -79,6 +80,13 @@ def _build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--max-total-size", type=int, default=512 * 1024 * 1024)
     resolve.add_argument("--http-timeout", default="30s")
     resolve.add_argument("--timeout", default="5m")
+    resolve.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        dest="set_overrides",
+        metavar="PATH=VALUE",
+    )
 
     cache_cmd = subs.add_parser("cache")
     cache_subs = cache_cmd.add_subparsers(dest="cache_cmd")
@@ -263,6 +271,7 @@ def _resolve_coord(
 def _run_resolve(args: argparse.Namespace, stdout, stderr) -> int:
     if not args.target:
         raise UsageError("resolve requires a target", argument="target", reason="missing")
+    override_ns = parse_set_flags(getattr(args, "set_overrides", None) or [])
     cache_root = Path(args.cache_dir) if args.cache_dir else default_cache_dir()
     cache = Cache(root=cache_root)
     npmrc_path = Path(args.npmrc) if args.npmrc else None
@@ -298,8 +307,12 @@ def _run_resolve(args: argparse.Namespace, stdout, stderr) -> int:
     order = layer_order(graph)
     layers_data = [graph.nodes[nid].doc.namespace for nid in order]
     provenance = [(nid.canonical, graph.nodes[nid].file) for nid in order]
-    merged = merge_namespaces(layers_data, provenance=provenance)
     layers = [Layer(canonical_id=nid.canonical, data=graph.nodes[nid].doc.namespace) for nid in order]
+    if override_ns:
+        layers_data.insert(0, override_ns)
+        provenance.insert(0, (OVERRIDE_CANONICAL_ID, OVERRIDE_CANONICAL_ID))
+        layers.insert(0, Layer(canonical_id=OVERRIDE_CANONICAL_ID, data=override_ns))
+    merged = merge_namespaces(layers_data, provenance=provenance)
 
     root_file = graph.nodes[graph.root_id].file
     resources = build_resource_binding(graph, session)
@@ -314,6 +327,8 @@ def _run_resolve(args: argparse.Namespace, stdout, stderr) -> int:
         for nid in order
         if nid != graph.root_id
     ]
+    if override_ns:
+        ancestor_payload.insert(0, {"canonical_id": OVERRIDE_CANONICAL_ID, "distance": -1})
     payload = {
         "root": graph.root_id.canonical,
         "content": resolved,
