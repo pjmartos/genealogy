@@ -167,7 +167,7 @@ def _check_one_prompt(
         doc = graph.nodes[nid].doc
         if not doc.abstracts or not doc.schema_uri:
             continue
-        doc_schema_uri = resolve_schema_uri(doc.schema_uri, doc.file)
+        doc_schema_uri = resolve_schema_uri(doc.schema_uri, doc.disk_file)
         doc_schema = fetch_schema(doc_schema_uri, schema_opts)
         if doc_schema is not None:
             errors.extend(validate_schema_type_consistency(doc, doc_schema))

@@ -164,7 +164,7 @@ def _detect_cycles(nodes: dict[str, _ResourceNode]) -> None:
         if color[canonical] == GRAY:
             idx = stack.index(canonical)
             cycle = stack[idx:] + [canonical]
-            payload = [{"file": str(nodes[c].file_path), "line": None, "column": None} for c in cycle]
+            payload = [{"file": nodes[c].coord.canonical, "line": None, "column": None} for c in cycle]
             raise CycleError(payload, cycle, kind="resource")
         if color[canonical] == BLACK:
             return
@@ -236,7 +236,7 @@ def build_resource_binding(graph, session) -> ResourceBinding:
         if not file_path.exists():
             raise _ref_error(
                 coord.canonical,
-                referring_file=str(file_path),
+                referring_file=coord.canonical,
                 searched_in=f"{coord.package}@{coord.version}",
                 reason="missing",
             )
@@ -248,7 +248,7 @@ def build_resource_binding(graph, session) -> ResourceBinding:
         for ref in doc.references:
             child_coord, child_path = _resolve_body_to_coord(
                 ref.raw,
-                referring_file=str(file_path),
+                referring_file=coord.canonical,
                 referring_manifest=manifest,
                 referring_package_root=pkg_root,
                 referring_entry_path=entry_path,

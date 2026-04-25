@@ -299,6 +299,14 @@ def test_resource_cycle_detected(tmp_path):
     with pytest.raises(CycleError) as ei:
         _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
     assert ei.value.details["kind"] == "resource"
+    files = [n["file"] for n in ei.value.location]
+    assert files == [
+        "@acme/p@1.0.0#a",
+        "@acme/p@1.0.0#b",
+        "@acme/p@1.0.0#a",
+    ]
+    for f in files:
+        assert ".cache" not in f and "AT_acme__p" not in f
 
 
 def test_position_validation_rejects_midline_in_flow_scalar(tmp_path):

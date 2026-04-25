@@ -113,25 +113,26 @@ class Session:
                     self.cache.install_tarball(name, version, data, force=needs_refresh)
                     self._refreshed.add(key)
         manifest_file = pkg_root / "package.json"
+        coord = f"{name}@{version}"
         if not manifest_file.exists():
             raise SchemaError(
-                f"package {name}@{version} missing package.json",
-                file=str(manifest_file),
+                f"package {coord} missing package.json",
+                file=coord,
                 field_name="package.json",
                 reason="missing_manifest",
             )
-        manifest = parse_manifest(manifest_file.read_text(encoding="utf-8"), file=str(manifest_file))
+        manifest = parse_manifest(manifest_file.read_text(encoding="utf-8"), file=coord)
         if manifest.name != name:
             raise SchemaError(
                 f"package.json 'name' mismatch: expected {name!r} got {manifest.name!r}",
-                file=str(manifest_file),
+                file=coord,
                 field_name="name",
                 reason="name_mismatch",
             )
         if manifest.version != version:
             raise SchemaError(
                 f"package.json 'version' mismatch: expected {version!r} got {manifest.version!r}",
-                file=str(manifest_file),
+                file=coord,
                 field_name="version",
                 reason="version_mismatch",
             )
@@ -184,26 +185,27 @@ def _load_prompt_file(file_path: str, *, strict: bool = True) -> PromptDocument:
 def _load_registry_prompt(session: Session, pkg: str, version: str, prompt_id: str) -> tuple[PromptDocument, Manifest, Path, str]:
     manifest, pkg_root = session.ensure_package(pkg, version)
     entry = manifest.prompt_by_id(prompt_id)
+    canonical = f"{pkg}@{version}#{prompt_id}"
     if entry is None:
         raise ReferenceError_(
             f"package {pkg}@{version} does not contain prompt id {prompt_id!r}",
-            file=str(pkg_root / "package.json"),
+            file=f"{pkg}@{version}",
             line=None,
             column=None,
-            reference=f"{pkg}@{version}#{prompt_id}",
+            reference=canonical,
             searched_in=f"{pkg}@{version}",
         )
     prompt_file = pkg_root / entry.path
     if not prompt_file.exists():
         raise SchemaError(
             f"prompt file {entry.path} declared by manifest does not exist",
-            file=str(prompt_file),
+            file=canonical,
             field_name="path",
             reason="missing_prompt_file",
         )
     text = _read_payload_text(str(prompt_file), strict=session.strict_parse)
-    doc = parse_prompt(text, file=str(prompt_file), strict=session.strict_parse)
-    canonical = f"{pkg}@{version}#{prompt_id}"
+    doc = parse_prompt(text, file=canonical, strict=session.strict_parse)
+    doc.disk_file = str(prompt_file)
     attach_file(doc.namespace, canonical)
     return doc, manifest, pkg_root, canonical
 

@@ -145,6 +145,11 @@ class PromptDocument:
     namespace: dict[str, Any] = field(default_factory=dict)
     resource_refs: list[ResourceRefInPrompt] = field(default_factory=list)
     abstracts: dict[str, AbstractAnnotation] = field(default_factory=dict)
+    disk_file: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.disk_file:
+            self.disk_file = self.file
 
 
 def _validate_rel_path(raw: str, *, file: str, line: int | None, column: int | None) -> None:

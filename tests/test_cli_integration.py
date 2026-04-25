@@ -688,6 +688,72 @@ def test_describe_unknown_prompt_id_reference_error(tmp_path, npmrc):
             "describe", "@a/b@1.0.0#nope",
         ], stdout=cap.out, stderr=cap.err)
         assert code == EXIT_REFERENCE
+        env = json.loads(cap.out.getvalue())
+        assert env["error"]["location"]["file"] == "@a/b@1.0.0"
+        assert ".cache" not in env["error"]["location"]["file"]
+    finally:
+        server.stop()
+
+
+def test_resolve_cached_prompt_schema_error_uses_canonical_id(tmp_path, npmrc):
+    manifest = {"name": "@a/b", "version": "1.0.0", "prompts": [{"id": "broken", "path": "prompts/broken.yaml"}]}
+    tarballs = {("@a/b", "1.0.0"): _pack(manifest, {"prompts/broken.yaml": b"ancestors: not a list\n"})}
+    server = _RegistryServer(tarballs)
+    server.start()
+    try:
+        rc = npmrc({"@a:registry": server.url})
+        cap = _Capture()
+        code = run([
+            "--output", "json",
+            "--npmrc", str(rc),
+            "--cache-dir", str(tmp_path / "cache"),
+            "resolve", "@a/b@1.0.0#broken",
+        ], stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_SCHEMA, cap.out.getvalue()
+        env = json.loads(cap.out.getvalue())
+        assert env["error"]["location"]["file"] == "@a/b@1.0.0#broken"
+        assert ".cache" not in env["error"]["location"]["file"]
+    finally:
+        server.stop()
+
+
+def test_resolve_cached_resource_cycle_uses_canonical_ids(tmp_path, npmrc):
+    manifest = {
+        "name": "@a/b",
+        "version": "1.0.0",
+        "prompts": [{"id": "root", "path": "prompts/root.yaml"}],
+        "resources": [
+            {"id": "alpha", "path": "resources/alpha.md", "contentType": "markdown"},
+            {"id": "beta",  "path": "resources/beta.md",  "contentType": "markdown"},
+        ],
+    }
+    files = {
+        "prompts/root.yaml":   b'body: "${resource:../resources/alpha.md}"\n',
+        "resources/alpha.md":  b"${resource:beta.md}\n",
+        "resources/beta.md":   b"${resource:alpha.md}\n",
+    }
+    tarballs = {("@a/b", "1.0.0"): _pack(manifest, files)}
+    server = _RegistryServer(tarballs)
+    server.start()
+    try:
+        rc = npmrc({"@a:registry": server.url})
+        cap = _Capture()
+        code = run([
+            "--output", "json",
+            "--npmrc", str(rc),
+            "--cache-dir", str(tmp_path / "cache"),
+            "resolve", "@a/b@1.0.0#root",
+        ], stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_CYCLE, cap.out.getvalue()
+        env = json.loads(cap.out.getvalue())
+        files_emitted = [n["file"] for n in env["error"]["location"]]
+        assert files_emitted == [
+            "@a/b@1.0.0#alpha",
+            "@a/b@1.0.0#beta",
+            "@a/b@1.0.0#alpha",
+        ]
+        for f in files_emitted:
+            assert ".cache" not in f and "AT_a__b" not in f
     finally:
         server.stop()
 
