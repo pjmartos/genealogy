@@ -1012,6 +1012,173 @@ def test_resolve_null_shadow_filled_descendant_still_resolves(tmp_path):
     assert "greet: hello" in cap.out.getvalue()
 
 
+def test_resolve_exit16_location_points_to_marker_not_annotation(tmp_path):
+    # The annotation block lives at lines 1-3; the body marker is on line 5.
+    # Per T22 / T31, the exit-16 envelope MUST locate the marker, not the
+    # annotation entry.
+    prompt = tmp_path / "p.yaml"
+    prompt.write_text(
+        "abstracts:\n"            # line 1
+        "  greet:\n"              # line 2
+        "    description: x\n"    # line 3
+        "scratch: ok\n"           # line 4
+        'body: "${abstract:greet}"\n'  # line 5
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "resolve", str(prompt)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_ABSTRACT_UNFILLED
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"]["reason"] == "not_provided"
+    assert env["error"]["location"]["line"] == 5
+
+
+def test_resolve_exit16_marker_location_for_null_shadow(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        "abstracts:\n"            # line 1
+        "  greet:\n"              # line 2
+        "    description: x\n"    # line 3
+        "noise: ok\n"             # line 4
+        'greet: "${abstract:greet}"\n'  # line 5
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text(
+        "ancestors:\n  - ./base.yaml\n"
+        "greet: null\n"
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "resolve", str(child)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_ABSTRACT_UNFILLED
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"]["reason"] == "null_shadow"
+    loc = env["error"]["location"]
+    assert loc["line"] == 5
+    assert loc["file"].endswith("base.yaml")
+
+
+def test_resolve_exit16_marker_location_for_abstract_inherited(tmp_path):
+    # When the nearest value at the abstract path is itself another marker,
+    # the resolver reports `abstract_inherited`. Location must still point
+    # at a body marker, not at the annotation entry.
+    prompt = tmp_path / "p.yaml"
+    prompt.write_text(
+        "abstracts:\n"                       # line 1
+        "  greet:\n"                         # line 2
+        "    description: x\n"               # line 3
+        'greet: "${abstract:greet}"\n'       # line 4
+        'body: "use ${abstract:greet}"\n'    # line 5
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "resolve", str(prompt)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_ABSTRACT_UNFILLED
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"]["reason"] == "abstract_inherited"
+    # Either body marker location is acceptable (line 4 or line 5);
+    # critically the annotation lines (1-3) must NOT be reported.
+    assert env["error"]["location"]["line"] in (4, 5)
+
+
+def test_resolve_exit16_marker_location_in_json_prompt(tmp_path):
+    # JSON prompts also carry abstract markers; the same location rule
+    # applies. The annotation lives on line 2; the marker on line 3.
+    prompt = tmp_path / "p.json"
+    prompt.write_text(
+        "{\n"
+        '  "abstracts": { "x": { "description": "X" } },\n'
+        '  "value": "${abstract:x}"\n'
+        "}\n"
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "resolve", str(prompt)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_ABSTRACT_UNFILLED
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["location"]["line"] == 3
+
+
+def test_resolve_exit16_aggregates_multiple_markers_at_their_own_locations(tmp_path):
+    # Two distinct unfilled abstracts should each report their own marker
+    # location in the aggregated envelope (not the annotation block).
+    prompt = tmp_path / "p.yaml"
+    prompt.write_text(
+        "abstracts:\n"                            # line 1
+        "  a:\n"                                  # line 2
+        "    description: a\n"                    # line 3
+        "  b:\n"                                  # line 4
+        "    description: b\n"                    # line 5
+        'first: "${abstract:a}"\n'                # line 6
+        'second: "${abstract:b}"\n'               # line 7
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "resolve", str(prompt)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_ABSTRACT_UNFILLED
+    env = json.loads(cap.out.getvalue())
+    errs = env["error"]["details"]["errors"]
+    by_path = {e["details"]["placeholder"]: e["location"]["line"] for e in errs}
+    assert by_path == {"a": 6, "b": 7}
+
+
+def test_resolve_exit16_falls_back_to_annotation_when_marker_absent(tmp_path):
+    # Defensive fallback: if a prompt somehow carries an annotation entry
+    # for which no body marker exists in its own namespace (a shape that
+    # validate_abstract_coupling normally rejects, but may slip through
+    # when the declaration is inherited and silently re-annotated), the
+    # resolver still surfaces the error with the annotation location
+    # rather than crashing.
+    from stemmata.cli import _declared_abstracts
+    from stemmata.prompt_doc import AbstractAnnotation, PromptDocument
+
+    class _FakeNode:
+        def __init__(self, doc, file):
+            self.doc = doc
+            self.file = file
+
+    class _FakeNodeId:
+        def __init__(self, canonical):
+            self.canonical = canonical
+
+    class _FakeGraph:
+        def __init__(self, node):
+            nid = _FakeNodeId("local")
+            self.order = [nid]
+            self.nodes = {nid: node}
+
+    namespace = {"unrelated": "value"}
+    abstracts = {
+        "ghost": AbstractAnnotation(
+            path="ghost",
+            description="orphan",
+            type="string",
+            line=42,
+            column=7,
+        ),
+    }
+    doc = PromptDocument(
+        file="/tmp/p.yaml",
+        data={"unrelated": "value"},
+        ancestors=[],
+        schema_uri=None,
+        namespace=namespace,
+        abstracts=abstracts,
+        disk_file="/tmp/p.yaml",
+    )
+    graph = _FakeGraph(_FakeNode(doc=doc, file="/tmp/p.yaml"))
+    declared = _declared_abstracts(graph)
+    assert len(declared) == 1
+    assert declared[0].path == "ghost"
+    assert declared[0].line == 42
+    assert declared[0].column == 7
+
+
 def test_validate_surfaces_null_shadow_bypass(tmp_path):
     base = tmp_path / "base.yaml"
     base.write_text(

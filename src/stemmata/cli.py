@@ -257,13 +257,27 @@ def _declared_abstracts(graph) -> list[DeclaredAbstract]:
     out: list[DeclaredAbstract] = []
     for nid in graph.order:
         node = graph.nodes[nid]
+        if not node.doc.abstracts:
+            continue
+        marker_by_path: dict[str, AbstractRef] = {}
+        for r in scan_abstract_references(node.doc.namespace, file_fallback=node.file):
+            marker_by_path.setdefault(r.path, r)
         for path, ann in node.doc.abstracts.items():
-            out.append(DeclaredAbstract(
-                path=path,
-                file=node.file,
-                line=ann.line,
-                column=ann.column,
-            ))
+            ref = marker_by_path.get(path)
+            if ref is not None:
+                out.append(DeclaredAbstract(
+                    path=path,
+                    file=ref.file or node.file,
+                    line=ref.line,
+                    column=ref.column,
+                ))
+            else:
+                out.append(DeclaredAbstract(
+                    path=path,
+                    file=node.file,
+                    line=ann.line,
+                    column=ann.column,
+                ))
     return out
 
 
