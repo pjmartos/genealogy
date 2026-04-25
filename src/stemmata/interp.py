@@ -641,6 +641,50 @@ def _collect_from_inner(
         ))
 
 
+@dataclass
+class DeclaredAbstract:
+    path: str
+    file: str | None
+    line: int | None
+    column: int | None
+
+
+def collect_unfilled_declared_abstracts(
+    merged: Any,
+    layers: list[Layer],
+    declared: list[DeclaredAbstract],
+    out: list[Any],
+    *,
+    already_flagged: set[str] | None = None,
+) -> None:
+    seen = set(already_flagged or ())
+    for d in declared:
+        if d.path in seen:
+            continue
+        value, status, _provider, searched = lookup_with_provenance(
+            merged, layers, d.path,
+        )
+        if status == "not_provided":
+            err = AbstractUnfilledError(
+                d.path, file=d.file, line=d.line, column=d.column,
+                reason="not_provided", ancestors_searched=searched,
+            )
+        elif status == "explicit_null":
+            err = AbstractUnfilledError(
+                d.path, file=d.file, line=d.line, column=d.column,
+                reason="null_shadow", ancestors_searched=searched,
+            )
+        elif _is_abstract_marker_value(value):
+            err = AbstractUnfilledError(
+                d.path, file=d.file, line=d.line, column=d.column,
+                reason="abstract_inherited", ancestors_searched=searched,
+            )
+        else:
+            continue
+        out.append(err)
+        seen.add(d.path)
+
+
 def collect_placeholder_errors(
     node: Any,
     namespace: Any,

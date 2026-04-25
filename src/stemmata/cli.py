@@ -32,8 +32,10 @@ from stemmata.errors import (
 from stemmata.errors import AbstractUnfilledError
 from stemmata.interp import (
     AbstractRef,
+    DeclaredAbstract,
     Layer,
     collect_placeholder_errors,
+    collect_unfilled_declared_abstracts,
     interpolate,
     scan_abstract_references,
 )
@@ -251,6 +253,20 @@ def _schema_opts_from_args(args: argparse.Namespace, stderr) -> SchemaCheckOptio
     )
 
 
+def _declared_abstracts(graph) -> list[DeclaredAbstract]:
+    out: list[DeclaredAbstract] = []
+    for nid in graph.order:
+        node = graph.nodes[nid]
+        for path, ann in node.doc.abstracts.items():
+            out.append(DeclaredAbstract(
+                path=path,
+                file=node.file,
+                line=ann.line,
+                column=ann.column,
+            ))
+    return out
+
+
 def _gate_abstract_invariants(
     graph,
     schema_opts: SchemaCheckOptions | None,
@@ -296,6 +312,14 @@ def _resolve_coord(
     collect_placeholder_errors(
         merged, merged, layers,
         parent_is_list=False, root_file=root_file, out=diagnostics,
+    )
+    flagged_paths: set[str] = {
+        e.details.get("placeholder") for e in diagnostics
+        if isinstance(e, AbstractUnfilledError)
+    }
+    collect_unfilled_declared_abstracts(
+        merged, layers, _declared_abstracts(graph), diagnostics,
+        already_flagged=flagged_paths,
     )
     unfilled_paths: set[str] = {
         e.details.get("placeholder") for e in diagnostics
@@ -400,6 +424,15 @@ def _run_resolve(args: argparse.Namespace, stdout, stderr) -> int:
 
     root_file = graph.nodes[graph.root_id].file
     resources = build_resource_binding(graph, session)
+
+    declared = _declared_abstracts(graph)
+    declared_diags: list[Any] = []
+    collect_unfilled_declared_abstracts(merged, layers, declared, declared_diags)
+    if declared_diags:
+        if len(declared_diags) == 1:
+            raise declared_diags[0]
+        raise AggregatedError(declared_diags, command="resolve")
+
     resolved = interpolate(
         merged, layers, root_file=root_file, resources=resources,
         annotations=annotations,

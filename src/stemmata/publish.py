@@ -27,9 +27,11 @@ from stemmata.errors import (
     SchemaError,
 )
 from stemmata.interp import (
+    DeclaredAbstract,
     Layer,
     ResourceBinding,
     collect_placeholder_errors,
+    collect_unfilled_declared_abstracts,
     interpolate,
 )
 from stemmata.manifest import Manifest, parse_manifest
@@ -135,6 +137,19 @@ def _check_one_prompt(
         parent_is_list=False,
         root_file=graph.nodes[graph.root_id].file,
         out=diagnostics,
+    )
+    flagged_paths = {
+        e.details.get("placeholder") for e in diagnostics
+        if isinstance(e, AbstractUnfilledError)
+    }
+    declared = [
+        DeclaredAbstract(path=path, file=graph.nodes[nid].file,
+                         line=ann.line, column=ann.column)
+        for nid in graph.order
+        for path, ann in graph.nodes[nid].doc.abstracts.items()
+    ]
+    collect_unfilled_declared_abstracts(
+        merged, layers, declared, diagnostics, already_flagged=flagged_paths,
     )
     placeholder_errors = [e for e in diagnostics if not isinstance(e, AbstractUnfilledError)]
     abstracts = [e for e in diagnostics if isinstance(e, AbstractUnfilledError)]

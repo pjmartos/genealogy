@@ -342,6 +342,105 @@ def test_collect_placeholder_errors_reports_per_occurrence_positions():
     assert positions["three"][0] > positions["one"][0]
 
 
+def _declared(path, file="x.yaml", line=1, column=1):
+    from stemmata.interp import DeclaredAbstract
+    return DeclaredAbstract(path=path, file=file, line=line, column=column)
+
+
+def test_declared_abstracts_flags_null_shadow_when_marker_wiped():
+    from stemmata.errors import AbstractUnfilledError as AU
+    from stemmata.interp import collect_unfilled_declared_abstracts
+
+    merged = {"greet": None}
+    layers = [
+        Layer(canonical_id="child", data={"greet": None}),
+        Layer(canonical_id="parent", data={"greet": "${abstract:greet}"}),
+    ]
+    out: list = []
+    collect_unfilled_declared_abstracts(
+        merged, layers, [_declared("greet", file="parent.yaml", line=2, column=3)], out,
+    )
+    assert len(out) == 1
+    assert isinstance(out[0], AU)
+    assert out[0].details["reason"] == "null_shadow"
+    assert out[0].details["placeholder"] == "greet"
+    assert out[0].location["file"] == "parent.yaml"
+    assert out[0].location["line"] == 2
+    assert out[0].location["column"] == 3
+
+
+def test_declared_abstracts_flags_not_provided_when_path_missing():
+    from stemmata.errors import AbstractUnfilledError as AU
+    from stemmata.interp import collect_unfilled_declared_abstracts
+
+    merged: dict = {}
+    layers = [Layer(canonical_id="parent", data={})]
+    out: list = []
+    collect_unfilled_declared_abstracts(
+        merged, layers, [_declared("missing")], out,
+    )
+    assert len(out) == 1
+    assert isinstance(out[0], AU)
+    assert out[0].details["reason"] == "not_provided"
+
+
+def test_declared_abstracts_flags_abstract_inherited_when_marker_survives():
+    from stemmata.errors import AbstractUnfilledError as AU
+    from stemmata.interp import collect_unfilled_declared_abstracts
+
+    merged = {"thing": "${abstract:thing}"}
+    layers = [
+        Layer(canonical_id="child", data={"thing": "${abstract:thing}"}),
+        Layer(canonical_id="parent", data={"thing": "${abstract:thing}"}),
+    ]
+    out: list = []
+    collect_unfilled_declared_abstracts(
+        merged, layers, [_declared("thing")], out,
+    )
+    assert len(out) == 1
+    assert isinstance(out[0], AU)
+    assert out[0].details["reason"] == "abstract_inherited"
+
+
+def test_declared_abstracts_silent_when_filled():
+    from stemmata.interp import collect_unfilled_declared_abstracts
+
+    merged = {"thing": "concrete"}
+    layers = [Layer(canonical_id="l0", data=merged)]
+    out: list = []
+    collect_unfilled_declared_abstracts(
+        merged, layers, [_declared("thing")], out,
+    )
+    assert out == []
+
+
+def test_declared_abstracts_skips_already_flagged_paths():
+    from stemmata.interp import collect_unfilled_declared_abstracts
+
+    merged: dict = {}
+    layers = [Layer(canonical_id="l0", data=merged)]
+    out: list = []
+    collect_unfilled_declared_abstracts(
+        merged, layers, [_declared("a"), _declared("b")], out,
+        already_flagged={"a"},
+    )
+    assert len(out) == 1
+    assert out[0].details["placeholder"] == "b"
+
+
+def test_declared_abstracts_handles_walk_through_null_parent():
+    from stemmata.interp import collect_unfilled_declared_abstracts
+
+    merged = {"a": None}
+    layers = [Layer(canonical_id="l0", data=merged)]
+    out: list = []
+    collect_unfilled_declared_abstracts(
+        merged, layers, [_declared("a.b.c")], out,
+    )
+    assert len(out) == 1
+    assert out[0].details["reason"] == "not_provided"
+
+
 def test_interp_abstract_error_reports_per_occurrence_position():
     from stemmata.errors import AbstractUnfilledError
 

@@ -13,7 +13,13 @@ from stemmata.abstracts import (
     validate_schema_type_consistency,
 )
 from stemmata.errors import AbstractUnfilledError, AggregatedError, PromptCliError, SchemaError
-from stemmata.interp import Layer, collect_placeholder_errors, interpolate
+from stemmata.interp import (
+    DeclaredAbstract,
+    Layer,
+    collect_placeholder_errors,
+    collect_unfilled_declared_abstracts,
+    interpolate,
+)
 from stemmata.merge import merge_namespaces
 from stemmata.prompt_doc import RESERVED_KEYS, parse_prompt
 from stemmata.resolver import (
@@ -89,6 +95,19 @@ def _resolve_pipeline(graph, session, schema_opts: SchemaCheckOptions) -> _Pipel
     collect_placeholder_errors(
         merged, merged, layers,
         parent_is_list=False, root_file=root_file, out=diagnostics,
+    )
+    flagged_paths = {
+        e.details.get("placeholder") for e in diagnostics
+        if isinstance(e, AbstractUnfilledError)
+    }
+    declared = [
+        DeclaredAbstract(path=path, file=graph.nodes[nid].file,
+                         line=ann.line, column=ann.column)
+        for nid in graph.order
+        for path, ann in graph.nodes[nid].doc.abstracts.items()
+    ]
+    collect_unfilled_declared_abstracts(
+        merged, layers, declared, diagnostics, already_flagged=flagged_paths,
     )
     abstracts = [e for e in diagnostics if isinstance(e, AbstractUnfilledError)]
     others = [e for e in diagnostics if not isinstance(e, AbstractUnfilledError)]

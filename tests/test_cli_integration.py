@@ -798,6 +798,181 @@ def test_resolve_abstract_inherited_from_ancestor_fails(tmp_path):
     assert env["error"]["details"]["reason"] == "abstract_inherited"
 
 
+def test_resolve_null_shadow_at_marker_path_fails_exit_16(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        "abstracts:\n"
+        "  greet:\n"
+        "    description: opening line\n"
+        'greet: "${abstract:greet}"\n'
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text(
+        "ancestors:\n  - ./base.yaml\n"
+        "greet: null\n"
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "resolve", str(child)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_ABSTRACT_UNFILLED, cap.out.getvalue()
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"]["placeholder"] == "greet"
+    assert env["error"]["details"]["reason"] == "null_shadow"
+
+
+def test_resolve_null_shadow_with_inline_marker_fails_exit_16(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        "abstracts:\n"
+        "  greet:\n"
+        "    description: opening line\n"
+        'greet: "Hello ${abstract:greet}"\n'
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text(
+        "ancestors:\n  - ./base.yaml\n"
+        "greet: null\n"
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "resolve", str(child)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_ABSTRACT_UNFILLED, cap.out.getvalue()
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"]["reason"] == "null_shadow"
+
+
+def test_resolve_null_shadow_in_block_scalar_fails_exit_16(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        "abstracts:\n"
+        "  greet:\n"
+        "    description: opening line\n"
+        "greet: |\n"
+        "  ${abstract:greet}\n"
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text(
+        "ancestors:\n  - ./base.yaml\n"
+        "greet: null\n"
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "resolve", str(child)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_ABSTRACT_UNFILLED, cap.out.getvalue()
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"]["reason"] == "null_shadow"
+
+
+def test_resolve_null_shadow_does_not_double_report(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        "abstracts:\n"
+        "  greet:\n"
+        "    description: opening line\n"
+        'greet: "${abstract:greet}"\n'
+        'extra: "${abstract:greet}"\n'
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text(
+        "ancestors:\n  - ./base.yaml\n"
+        "greet: null\n"
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "resolve", str(child)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_ABSTRACT_UNFILLED
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"].get("reason") == "null_shadow"
+    assert env["error"]["details"].get("placeholder") == "greet"
+
+
+def test_resolve_null_shadow_filled_descendant_still_resolves(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        "abstracts:\n"
+        "  greet:\n"
+        "    description: opening line\n"
+        'greet: "${abstract:greet}"\n'
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text(
+        "ancestors:\n  - ./base.yaml\n"
+        'greet: "hello"\n'
+    )
+    cap = _Capture()
+    code = run(["--cache-dir", str(tmp_path / "cache"), "resolve", str(child)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+    assert "greet: hello" in cap.out.getvalue()
+
+
+def test_validate_surfaces_null_shadow_bypass(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        "abstracts:\n"
+        "  greet:\n"
+        "    description: opening line\n"
+        'greet: "${abstract:greet}"\n'
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text(
+        "ancestors:\n  - ./base.yaml\n"
+        "greet: null\n"
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "validate", str(child)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_OK, cap.out.getvalue()
+    env = json.loads(cap.out.getvalue())
+    abstracts = env["result"]["abstracts"]
+    assert any(
+        a["path"] == "greet" and a["reason"] == "null_shadow"
+        for a in abstracts
+    ), abstracts
+
+
+def test_publish_warns_on_null_shadow_bypass(tmp_path):
+    pkg = tmp_path / "pkg"
+    (pkg / "prompts").mkdir(parents=True)
+    (pkg / "package.json").write_text(json.dumps({
+        "name": "@stemmata/null-shadow-pub",
+        "version": "1.0.0",
+        "license": "UNLICENSED",
+        "prompts": [
+            {"id": "base",  "path": "prompts/base.yaml",  "contentType": "yaml"},
+            {"id": "child", "path": "prompts/child.yaml", "contentType": "yaml"},
+        ],
+    }))
+    (pkg / "prompts" / "base.yaml").write_text(
+        "abstracts:\n"
+        "  greet:\n"
+        "    description: opening line\n"
+        'greet: "${abstract:greet}"\n'
+    )
+    (pkg / "prompts" / "child.yaml").write_text(
+        'ancestors:\n  - "./base.yaml"\n'
+        "greet: null\n"
+    )
+    cap = _Capture()
+    code = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                "publish", str(pkg), "--dry-run",
+                "--tarball", str(tmp_path / "out.tgz")],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_OK, cap.out.getvalue()
+    env = json.loads(cap.out.getvalue())
+    abstracts = env["result"]["abstracts"]
+    assert any(
+        a["path"] == "greet" and a["reason"] == "null_shadow"
+        for a in abstracts
+    ), abstracts
+    assert "warning:" in cap.err.getvalue()
+
+
 def test_tree_text_annotates_abstract_holes(tmp_path):
     base = tmp_path / "base.yaml"
     base.write_text(
