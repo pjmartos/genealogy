@@ -45,14 +45,14 @@ from stemmata.yaml_loader import _ScalarStr, load_all_with_positions
 def discover_files(target: str) -> list[Path]:
     p = Path(target)
     if p.is_file():
-        return [p]
+        return [p.resolve()]
     if not p.is_dir():
         raise SchemaError(f"validate target does not exist: {target}",
                           file=target, field_name="target", reason="not_found")
     found: list[Path] = []
     for pat in ("**/*.yaml", "**/*.yml", "**/*.json"):
         found.extend(p.glob(pat))
-    return sorted(set(found))
+    return sorted({f.resolve() for f in found})
 
 
 # ---------------------------------------------------------------------------

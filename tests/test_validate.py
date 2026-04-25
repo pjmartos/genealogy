@@ -612,6 +612,64 @@ class TestAbstractPlaceholders:
         reasons = _collect_reasons(env["error"])
         assert reasons & {"abstract_reannotation", "annotation_without_declaration"}
 
+    def test_validate_abstracts_file_is_absolute_for_relative_cli_path(self, tmp_path, monkeypatch):
+        _write(
+            tmp_path / "p.yaml",
+            'abstracts:\n  greet:\n    description: opening line\n'
+            'body: "${abstract:greet}"\n',
+        )
+        monkeypatch.chdir(tmp_path)
+        cap = _Capture()
+        code = run(["--output", "json", "validate", "p.yaml"],
+                   stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.err.getvalue()
+        payload = json.loads(cap.out.getvalue())["result"]
+        assert payload["abstracts_found"] == 1
+        emitted = payload["abstracts"][0]["file"]
+        assert Path(emitted).is_absolute()
+        assert Path(emitted).resolve() == (tmp_path / "p.yaml").resolve()
+
+    def test_validate_abstracts_file_is_stable_across_cwds(self, tmp_path, monkeypatch):
+        _write(
+            tmp_path / "p.yaml",
+            'abstracts:\n  greet:\n    description: opening line\n'
+            'body: "${abstract:greet}"\n',
+        )
+        cap1 = _Capture()
+        run(["--output", "json", "validate", str(tmp_path / "p.yaml")],
+            stdout=cap1.out, stderr=cap1.err)
+        out_abs = json.loads(cap1.out.getvalue())["result"]["abstracts"][0]["file"]
+
+        monkeypatch.chdir(tmp_path)
+        cap2 = _Capture()
+        run(["--output", "json", "validate", "p.yaml"],
+            stdout=cap2.out, stderr=cap2.err)
+        out_rel = json.loads(cap2.out.getvalue())["result"]["abstracts"][0]["file"]
+
+        cap3 = _Capture()
+        run(["--output", "json", "validate", "./p.yaml"],
+            stdout=cap3.out, stderr=cap3.err)
+        out_dot = json.loads(cap3.out.getvalue())["result"]["abstracts"][0]["file"]
+
+        assert out_abs == out_rel == out_dot
+
+    def test_validate_directory_emits_absolute_paths_for_abstracts(self, tmp_path, monkeypatch):
+        sub = tmp_path / "pkg"
+        _write(
+            sub / "p.yaml",
+            'abstracts:\n  greet:\n    description: opening line\n'
+            'body: "${abstract:greet}"\n',
+        )
+        monkeypatch.chdir(tmp_path)
+        cap = _Capture()
+        code = run(["--output", "json", "validate", "pkg"],
+                   stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.err.getvalue()
+        payload = json.loads(cap.out.getvalue())["result"]
+        emitted = payload["abstracts"][0]["file"]
+        assert Path(emitted).is_absolute()
+        assert Path(emitted).resolve() == (sub / "p.yaml").resolve()
+
     def test_validate_rejects_intra_doc_type_conflict_without_schema(self, tmp_path):
         _write(tmp_path / "a.yaml", 'a: 1\na.b: 2\n')
         cap = _Capture()
