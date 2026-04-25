@@ -101,18 +101,17 @@ def _resolve_body_to_coord(
             reason="absolute_path",
         )
     if referring_manifest is None or referring_package_root is None or referring_entry_path is None:
-        raise _ref_error(body, referring_file=referring_file, searched_in=referring_file, reason="missing")
-    searched = f"{referring_manifest.name}@{referring_manifest.version}"
+        raise _ref_error(body, referring_file=referring_file, searched_in="<local>", reason="missing")
     base_dir = posixpath.dirname(referring_entry_path.replace("\\", "/"))
     joined = posixpath.normpath(posixpath.join(base_dir, body))
     if joined.startswith("..") or joined.startswith("/"):
-        raise _ref_error(body, referring_file=referring_file, searched_in=searched, reason="missing")
+        raise _ref_error(body, referring_file=referring_file, searched_in="<local>", reason="missing")
     entry = referring_manifest.resource_by_path(joined)
     if entry is not None:
         coord = ResourceCoord(referring_manifest.name, referring_manifest.version, entry.id)
         return coord, referring_package_root / entry.path
     reason = "type_mismatch" if referring_manifest.prompt_by_path(joined) is not None else "missing"
-    raise _ref_error(body, referring_file=referring_file, searched_in=searched, reason=reason)
+    raise _ref_error(body, referring_file=referring_file, searched_in="<local>", reason=reason)
 
 
 def _find_package_for_local_file(file_path: str, session) -> tuple[Manifest, Path, str] | None:

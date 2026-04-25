@@ -381,14 +381,115 @@ def test_resource_placeholder_is_skipped_by_namespace_interp(tmp_path):
 
 
 def test_unresolvable_resource_in_local_file_without_package(tmp_path):
-    # A relative resource ref from a local file with no package manifest
-    # cannot be resolved.
     p = tmp_path / "solo.yaml"
     p.write_bytes(b'body: "${resource:foo.md}"\n')
     with pytest.raises(ReferenceError_) as ei:
         _resolve(tmp_path, p)
     assert ei.value.details["kind"] == "resource"
     assert ei.value.details["reason"] == "missing"
+    assert ei.value.details["searched_in"] == "<local>"
+
+
+def test_searched_in_is_coordinate_for_coord_form_missing(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "known", "path": "resources/known.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b'body: "${resource:@acme/p@1.0.0#unknown}"\n',
+                "resources/known.md": b"hi\n",
+            },
+        ),
+    }
+    with pytest.raises(ReferenceError_) as ei:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert ei.value.details["searched_in"] == "@acme/p@1.0.0"
+
+
+def test_searched_in_is_coordinate_for_coord_form_type_mismatch(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+            },
+            {
+                "prompts/base.yaml": b'body: "${resource:@acme/p@1.0.0#base}"\n',
+            },
+        ),
+    }
+    with pytest.raises(ReferenceError_) as ei:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert ei.value.details["reason"] == "type_mismatch"
+    assert ei.value.details["searched_in"] == "@acme/p@1.0.0"
+
+
+def test_searched_in_is_local_for_relative_path_missing_in_package(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+                "resources": [{"id": "known", "path": "resources/known.md", "contentType": "markdown"}],
+            },
+            {
+                "prompts/base.yaml": b'body: "${resource:../resources/missing.md}"\n',
+                "resources/known.md": b"hi\n",
+            },
+        ),
+    }
+    with pytest.raises(ReferenceError_) as ei:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert ei.value.details["reason"] == "missing"
+    assert ei.value.details["searched_in"] == "<local>"
+
+
+def test_searched_in_is_local_for_relative_path_type_mismatch(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [
+                    {"id": "base",     "path": "prompts/base.yaml"},
+                    {"id": "sibling",  "path": "prompts/sibling.yaml"},
+                ],
+            },
+            {
+                "prompts/base.yaml":    b'body: "${resource:./sibling.yaml}"\n',
+                "prompts/sibling.yaml": b"k: v\n",
+            },
+        ),
+    }
+    with pytest.raises(ReferenceError_) as ei:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert ei.value.details["reason"] == "type_mismatch"
+    assert ei.value.details["searched_in"] == "<local>"
+
+
+def test_searched_in_is_local_when_relative_escapes_package_root(tmp_path):
+    tarballs = {
+        ("@acme/p", "1.0.0"): _pack(
+            {
+                "name": "@acme/p",
+                "version": "1.0.0",
+                "prompts": [{"id": "base", "path": "prompts/base.yaml"}],
+            },
+            {
+                "prompts/base.yaml": b'body: "${resource:../../escape.md}"\n',
+            },
+        ),
+    }
+    with pytest.raises(ReferenceError_) as ei:
+        _resolve(tmp_path, "@acme/p@1.0.0#base", tarballs)
+    assert ei.value.details["reason"] == "missing"
+    assert ei.value.details["searched_in"] == "<local>"
 
 
 # ---------------------------------------------------------------------------

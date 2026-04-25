@@ -65,8 +65,11 @@ def _resource_lookup(
     line: int | None,
     column: int | None,
 ) -> str:
+    from stemmata.resource_resolve import _parse_coordinate_body
+
     placeholder = f"${{resource:{body}}}"
-    searched_in = file or "<local>"
+    coord_parts = _parse_coordinate_body(body)
+    searched_in = f"{coord_parts[0]}@{coord_parts[1]}" if coord_parts is not None else "<local>"
     if binding is not None:
         canonical = binding.bindings.get((file or "", body))
         if canonical is not None:
