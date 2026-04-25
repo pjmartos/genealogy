@@ -281,15 +281,26 @@ def collect_resource_refs(namespace: Any, *, file_fallback: str) -> list[Resourc
     return refs
 
 
-def parse_prompt(text: str, *, file: str, strict: bool = True, validate_paths: bool = True) -> PromptDocument:
-    if _is_json_file(file):
+def parse_prompt(
+    text: str,
+    *,
+    file: str,
+    strict: bool = True,
+    validate_paths: bool = True,
+    content_type: str | None = None,
+) -> PromptDocument:
+    if content_type is not None:
+        is_json = content_type == "json"
+    else:
+        is_json = _is_json_file(file)
+    if is_json:
         data, _positions = load_json_with_positions(text, file=file)
     else:
         data, _positions = load_with_positions(text, file=file, strict=strict)
     if data is None:
         data = {}
     if not isinstance(data, dict):
-        fmt = "JSON" if _is_json_file(file) else "YAML"
+        fmt = "JSON" if is_json else "YAML"
         raise SchemaError(
             f"prompt {file} must be a {fmt} mapping at the top level",
             file=file,

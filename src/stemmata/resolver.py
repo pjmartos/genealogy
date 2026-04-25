@@ -204,7 +204,12 @@ def _load_registry_prompt(session: Session, pkg: str, version: str, prompt_id: s
             reason="missing_prompt_file",
         )
     text = _read_payload_text(str(prompt_file), strict=session.strict_parse)
-    doc = parse_prompt(text, file=canonical, strict=session.strict_parse)
+    doc = parse_prompt(
+        text,
+        file=canonical,
+        strict=session.strict_parse,
+        content_type=entry.contentType,
+    )
     doc.disk_file = str(prompt_file)
     attach_file(doc.namespace, canonical)
     return doc, manifest, pkg_root, canonical
