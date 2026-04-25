@@ -260,6 +260,42 @@ def test_resolve_offline_violation(tmp_path, npmrc):
     assert code == EXIT_OFFLINE
 
 
+def test_resolve_offline_violation_when_no_registry_configured(tmp_path, npmrc):
+    rc = npmrc({})
+    child = tmp_path / "c.yaml"
+    child.write_text(
+        "ancestors:\n  - package: '@a/b'\n    version: '1.0.0'\n    prompt: base\n"
+    )
+    cap = _Capture()
+    code = run([
+        "--offline",
+        "--output", "json",
+        "--npmrc", str(rc),
+        "--cache-dir", str(tmp_path / "cache"),
+        "resolve", str(child),
+    ], stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_OFFLINE
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["category"] == "offline_violation"
+    assert "@a/b" in env["error"]["details"]["url"]
+    assert "1.0.0" in env["error"]["details"]["url"]
+
+
+def test_resolve_offline_root_coordinate_no_registry_configured(tmp_path, npmrc):
+    rc = npmrc({})
+    cap = _Capture()
+    code = run([
+        "--offline",
+        "--output", "json",
+        "--npmrc", str(rc),
+        "--cache-dir", str(tmp_path / "cache"),
+        "resolve", "@a/b@1.0.0#root",
+    ], stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_OFFLINE
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["category"] == "offline_violation"
+
+
 def test_cache_clear_empty(tmp_path):
     cap = _Capture()
     code = run(["--cache-dir", str(tmp_path / "cache"), "--output", "json", "cache", "clear"], stdout=cap.out, stderr=cap.err)

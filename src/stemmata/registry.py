@@ -98,8 +98,16 @@ class RegistryClient:
             )
         return reg.rstrip("/") + "/"
 
+    def _registry_or_placeholder(self, name: str) -> str:
+        try:
+            return self.registry_for_package(name)
+        except NetworkError:
+            if self.offline:
+                return "<registry>/"
+            raise
+
     def fetch_tarball(self, name: str, version: str) -> tuple[str, bytes]:
-        registry = self.registry_for_package(name)
+        registry = self._registry_or_placeholder(name)
         scope, simple = _split_name(name)
         filename = f"{simple}-{version}.tgz"
         url = f"{registry}{name}/-/{filename}"
@@ -163,7 +171,7 @@ class RegistryClient:
         """
         import base64
 
-        registry = self.registry_for_package(name)
+        registry = self._registry_or_placeholder(name)
         scope, simple = _split_name(name)
         filename = f"{simple}-{version}.tgz"
         tarball_url = f"{registry}{name}/-/{filename}"
@@ -201,7 +209,7 @@ class RegistryClient:
         return url, response
 
     def fetch_metadata(self, name: str) -> dict[str, Any]:
-        registry = self.registry_for_package(name)
+        registry = self._registry_or_placeholder(name)
         url = f"{registry}{urllib.parse.quote(name, safe='@/')}"
         raw = self._fetch(url)
         try:

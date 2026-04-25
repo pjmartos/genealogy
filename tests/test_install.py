@@ -6,7 +6,7 @@ import pytest
 
 from stemmata.cache import Cache
 from stemmata.cli import run
-from stemmata.errors import EXIT_GENERIC, EXIT_OK
+from stemmata.errors import EXIT_OFFLINE, EXIT_OK, EXIT_SCHEMA, EXIT_USAGE
 
 
 class _Capture:
@@ -87,7 +87,7 @@ def test_install_defaults_to_current_dir(tmp_path, monkeypatch):
     assert env["result"]["installed"] is True
 
 
-def test_install_fails_with_exit_1_when_package_json_missing(tmp_path):
+def test_install_fails_with_exit_10_when_package_json_missing(tmp_path):
     pkg = tmp_path / "pkg"
     pkg.mkdir()
     cache_dir = tmp_path / "cache"
@@ -96,14 +96,15 @@ def test_install_fails_with_exit_1_when_package_json_missing(tmp_path):
         ["--cache-dir", str(cache_dir), "--output", "json", "install", str(pkg)],
         stdout=cap.out, stderr=cap.err,
     )
-    assert code == EXIT_GENERIC
+    assert code == EXIT_SCHEMA
     env = json.loads(cap.out.getvalue())
     assert env["status"] == "error"
-    assert env["error"]["code"] == EXIT_GENERIC
+    assert env["error"]["code"] == EXIT_SCHEMA
+    assert env["error"]["details"]["reason"] == "missing_manifest"
 
 
 @pytest.mark.parametrize("drop", ["name", "version", "prompts"])
-def test_install_fails_with_exit_1_when_required_field_missing(tmp_path, drop):
+def test_install_fails_with_exit_10_when_required_field_missing(tmp_path, drop):
     pkg = tmp_path / "pkg"
     pkg.mkdir()
     (pkg / "prompts").mkdir()
@@ -122,12 +123,13 @@ def test_install_fails_with_exit_1_when_required_field_missing(tmp_path, drop):
         ["--cache-dir", str(cache_dir), "--output", "json", "install", str(pkg)],
         stdout=cap.out, stderr=cap.err,
     )
-    assert code == EXIT_GENERIC
+    assert code == EXIT_SCHEMA
     env = json.loads(cap.out.getvalue())
+    assert env["error"]["code"] == EXIT_SCHEMA
     assert drop in env["error"]["message"]
 
 
-def test_install_fails_with_exit_1_when_prompts_empty(tmp_path):
+def test_install_fails_with_exit_10_when_prompts_empty(tmp_path):
     pkg = tmp_path / "pkg"
     pkg.mkdir()
     manifest = {"name": "@acme/pkg", "version": "1.0.0", "prompts": []}
@@ -138,7 +140,52 @@ def test_install_fails_with_exit_1_when_prompts_empty(tmp_path):
         ["--cache-dir", str(cache_dir), "--output", "json", "install", str(pkg)],
         stdout=cap.out, stderr=cap.err,
     )
-    assert code == EXIT_GENERIC
+    assert code == EXIT_SCHEMA
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"]["reason"] == "empty_prompts"
+
+
+def test_install_fails_with_exit_10_when_package_json_invalid_json(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "package.json").write_text("{not json", encoding="utf-8")
+    cache_dir = tmp_path / "cache"
+    cap = _Capture()
+    code = run(
+        ["--cache-dir", str(cache_dir), "--output", "json", "install", str(pkg)],
+        stdout=cap.out, stderr=cap.err,
+    )
+    assert code == EXIT_SCHEMA
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"]["reason"] == "invalid_json"
+
+
+def test_install_fails_with_exit_10_when_package_json_not_object(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "package.json").write_text("[1, 2, 3]", encoding="utf-8")
+    cache_dir = tmp_path / "cache"
+    cap = _Capture()
+    code = run(
+        ["--cache-dir", str(cache_dir), "--output", "json", "install", str(pkg)],
+        stdout=cap.out, stderr=cap.err,
+    )
+    assert code == EXIT_SCHEMA
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"]["reason"] == "not_object"
+
+
+def test_install_fails_with_exit_2_when_target_not_a_directory(tmp_path):
+    missing = tmp_path / "no-such-dir"
+    cache_dir = tmp_path / "cache"
+    cap = _Capture()
+    code = run(
+        ["--cache-dir", str(cache_dir), "--output", "json", "install", str(missing)],
+        stdout=cap.out, stderr=cap.err,
+    )
+    assert code == EXIT_USAGE
+    env = json.loads(cap.out.getvalue())
+    assert env["error"]["details"]["reason"] == "not_a_directory"
 
 
 def test_install_enables_offline_resolution_of_cached_package(tmp_path):

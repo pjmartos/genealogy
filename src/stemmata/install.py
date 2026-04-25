@@ -7,7 +7,7 @@ from typing import Any
 
 from stemmata.bundle import build_tarball, collect_members
 from stemmata.cache import Cache
-from stemmata.errors import GenericError
+from stemmata.errors import SchemaError, UsageError
 from stemmata.manifest import parse_manifest
 
 
@@ -17,10 +17,6 @@ class InstallResult:
     version: str
     cache_path: str
     installed: bool
-
-
-def _ineligible(message: str) -> GenericError:
-    return GenericError(message, exception="IneligiblePackage")
 
 
 def _missing_or_empty(value: Any) -> bool:
@@ -34,24 +30,55 @@ def _missing_or_empty(value: Any) -> bool:
 def run_install(path: Path, *, cache: Cache) -> InstallResult:
     base = path.resolve()
     if not base.is_dir():
-        raise _ineligible(f"install target {str(path)!r} is not a directory")
+        raise UsageError(
+            f"install target {str(path)!r} is not a directory",
+            argument="path",
+            reason="not_a_directory",
+        )
 
     manifest_file = base / "package.json"
     if not manifest_file.is_file():
-        raise _ineligible(f"no package.json found at {manifest_file}")
+        raise SchemaError(
+            f"no package.json found at {manifest_file}",
+            file=str(manifest_file),
+            field_name="package.json",
+            reason="missing_manifest",
+        )
 
     raw = manifest_file.read_text(encoding="utf-8")
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
-        raise _ineligible(f"package.json at {manifest_file} is not valid JSON: {e.msg}")
+        raise SchemaError(
+            f"package.json at {manifest_file} is not valid JSON: {e.msg}",
+            file=str(manifest_file),
+            line=e.lineno,
+            column=e.colno,
+            field_name="<json>",
+            reason="invalid_json",
+        )
     if not isinstance(data, dict):
-        raise _ineligible(f"package.json at {manifest_file} must be a JSON object")
+        raise SchemaError(
+            f"package.json at {manifest_file} must be a JSON object",
+            file=str(manifest_file),
+            field_name="<root>",
+            reason="not_object",
+        )
 
     missing = [key for key in ("name", "version", "prompts") if key not in data or _missing_or_empty(data[key])]
     if missing:
-        raise _ineligible(
-            f"package.json at {manifest_file} is missing required field(s): {', '.join(missing)}"
+        if missing == ["prompts"] and "prompts" in data and _missing_or_empty(data["prompts"]):
+            raise SchemaError(
+                f"package.json at {manifest_file} 'prompts' array must not be empty",
+                file=str(manifest_file),
+                field_name="prompts",
+                reason="empty_prompts",
+            )
+        raise SchemaError(
+            f"package.json at {manifest_file} is missing required field(s): {', '.join(missing)}",
+            file=str(manifest_file),
+            field_name=missing[0],
+            reason="missing_field",
         )
 
     name = data["name"]
