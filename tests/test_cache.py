@@ -93,6 +93,33 @@ def test_clear_all(tmp_path):
     assert removed == 2
 
 
+def test_clear_all_evicts_schemas(tmp_path):
+    cache = Cache(root=tmp_path / "c")
+    schemas_dir = (tmp_path / "c" / "schemas")
+    schemas_dir.mkdir(parents=True, exist_ok=True)
+    payload_a = b'{"$schema":"x","type":"object"}'
+    payload_b = b'{"$schema":"y","type":"array"}'
+    (schemas_dir / "aaaa.json").write_bytes(payload_a)
+    (schemas_dir / "bbbb.json").write_bytes(payload_b)
+    removed, bytes_freed = cache.clear_all()
+    assert removed == 2
+    assert bytes_freed == len(payload_a) + len(payload_b)
+    assert list(schemas_dir.iterdir()) == []
+
+
+def test_clear_all_counts_packages_and_schemas_together(tmp_path):
+    cache = Cache(root=tmp_path / "c")
+    tar = _make_tarball({"package/package.json": b"{}"})
+    cache.install_tarball("@a/b", "1.0.0", tar)
+    schemas_dir = (tmp_path / "c" / "schemas")
+    schemas_dir.mkdir(parents=True, exist_ok=True)
+    (schemas_dir / "deadbeef.json").write_bytes(b'{"type":"object"}')
+    removed, _ = cache.clear_all()
+    assert removed == 2
+    assert not cache.has_package("@a/b", "1.0.0")
+    assert list(schemas_dir.iterdir()) == []
+
+
 def test_install_twice_is_idempotent(tmp_path):
     cache = Cache(root=tmp_path / "c")
     tar = _make_tarball({"package/package.json": b"{}"})

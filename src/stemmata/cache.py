@@ -134,26 +134,35 @@ class Cache:
             return False, 0
 
     def clear_all(self) -> tuple[int, int]:
-        pkgs_root = self.root / "packages"
         removed = 0
         bytes_freed = 0
-        if not pkgs_root.exists():
-            return 0, 0
-        for scope_dir in pkgs_root.iterdir():
-            if not scope_dir.is_dir():
-                continue
-            for version_dir in scope_dir.iterdir():
-                if not version_dir.is_dir():
+        pkgs_root = self.root / "packages"
+        if pkgs_root.exists():
+            for scope_dir in pkgs_root.iterdir():
+                if not scope_dir.is_dir():
                     continue
-                name = _unsafe_dirname(scope_dir.name)
-                version = version_dir.name
-                ok, size = self.evict(name, version)
-                if ok:
+                for version_dir in scope_dir.iterdir():
+                    if not version_dir.is_dir():
+                        continue
+                    name = _unsafe_dirname(scope_dir.name)
+                    version = version_dir.name
+                    ok, size = self.evict(name, version)
+                    if ok:
+                        removed += 1
+                        bytes_freed += size
+                with contextlib.suppress(OSError):
+                    if not any(scope_dir.iterdir()):
+                        scope_dir.rmdir()
+        schemas_root = self.root / "schemas"
+        if schemas_root.exists():
+            for entry in schemas_root.iterdir():
+                if not entry.is_file():
+                    continue
+                with contextlib.suppress(OSError):
+                    size = entry.stat().st_size
+                    entry.unlink()
                     removed += 1
                     bytes_freed += size
-            with contextlib.suppress(OSError):
-                if not any(scope_dir.iterdir()):
-                    scope_dir.rmdir()
         return removed, bytes_freed
 
 
