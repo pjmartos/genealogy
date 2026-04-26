@@ -110,13 +110,13 @@ def annotation_lookup(layers_docs) -> dict[str, AbstractAnnotation]:
     return out
 
 
-_SCHEMA_TYPE_TO_ANNOTATION = {
-    "string": "string",
-    "array": "list",
+_ANNOTATION_COMPATIBLE_SCHEMA_TYPES: dict[str, set[str]] = {
+    "string": {"string"},
+    "list": {"array"},
 }
 
 
-def _schema_constraint_at_path(schema: Any, dotted_path: str) -> str | None:
+def _schema_constrained_types_at_path(schema: Any, dotted_path: str) -> set[str] | None:
     if not isinstance(schema, dict):
         return None
     cur: Any = schema
@@ -131,16 +131,9 @@ def _schema_constraint_at_path(schema: Any, dotted_path: str) -> str | None:
         return None
     type_field = cur.get("type")
     if isinstance(type_field, str):
-        return type_field
-    if isinstance(type_field, list):
-        if not type_field or any(
-            not isinstance(t, str) or t not in _SCHEMA_TYPE_TO_ANNOTATION
-            for t in type_field
-        ):
-            return None
-        annotation_types = {_SCHEMA_TYPE_TO_ANNOTATION[t] for t in type_field}
-        if len(annotation_types) == 1:
-            return next(iter(annotation_types))
+        return {type_field}
+    if isinstance(type_field, list) and type_field and all(isinstance(t, str) for t in type_field):
+        return set(type_field)
     return None
 
 
@@ -150,17 +143,22 @@ def validate_schema_type_consistency(
 ) -> list[PromptCliError]:
     errors: list[PromptCliError] = []
     for path, ann in doc.abstracts.items():
-        schema_type = _schema_constraint_at_path(schema, path)
-        if schema_type is None:
+        constrained = _schema_constrained_types_at_path(schema, path)
+        if constrained is None:
             continue
-        if schema_type not in _SCHEMA_TYPE_TO_ANNOTATION:
+        compatible = _ANNOTATION_COMPATIBLE_SCHEMA_TYPES.get(ann.type)
+        if compatible is None:
             continue
-        expected = _SCHEMA_TYPE_TO_ANNOTATION[schema_type]
-        if expected == ann.type:
+        if constrained & compatible:
             continue
+        schema_type_repr = (
+            next(iter(constrained))
+            if len(constrained) == 1
+            else sorted(constrained)
+        )
         errors.append(SchemaError(
             f"'abstracts.{path}.type' is {ann.type!r} but $schema constrains "
-            f"the same path to {schema_type!r}; the annotation contradicts "
+            f"the same path to {schema_type_repr!r}; the annotation contradicts "
             f"the schema",
             file=doc.file,
             line=ann.line,

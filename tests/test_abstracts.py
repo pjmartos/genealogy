@@ -4,7 +4,7 @@ from pathlib import Path
 from textwrap import dedent
 
 from stemmata.abstracts import (
-    _schema_constraint_at_path,
+    _schema_constrained_types_at_path,
     annotation_lookup,
     body_abstract_paths,
     validate_abstract_coupling,
@@ -74,20 +74,20 @@ def test_schema_constraint_walks_nested_properties():
             },
         },
     }
-    assert _schema_constraint_at_path(schema, "outer.inner") == "array"
+    assert _schema_constrained_types_at_path(schema, "outer.inner") == {"array"}
 
 
 def test_schema_constraint_returns_none_when_unknown():
     schema = {"type": "object", "properties": {"a": {"type": "string"}}}
-    assert _schema_constraint_at_path(schema, "b") is None
-    assert _schema_constraint_at_path(schema, "a.deeper") is None
+    assert _schema_constrained_types_at_path(schema, "b") is None
+    assert _schema_constrained_types_at_path(schema, "a.deeper") is None
 
 
-def test_schema_constraint_handles_type_union_collapse():
+def test_schema_constraint_returns_full_type_union():
     schema = {"type": "object", "properties": {"x": {"type": ["array", "array"]}}}
-    assert _schema_constraint_at_path(schema, "x") == "list"
+    assert _schema_constrained_types_at_path(schema, "x") == {"array"}
     schema = {"type": "object", "properties": {"x": {"type": ["string", "integer"]}}}
-    assert _schema_constraint_at_path(schema, "x") is None
+    assert _schema_constrained_types_at_path(schema, "x") == {"string", "integer"}
 
 
 def test_schema_type_consistency_ok_when_aligned():
@@ -107,6 +107,52 @@ def test_schema_type_consistency_flags_contradiction():
         file="x.yaml",
     )
     schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    errors = validate_schema_type_consistency(doc, schema)
+    assert len(errors) == 1
+    assert errors[0].details["reason"] == "schema_type_mismatch"
+
+
+def test_schema_type_consistency_flags_string_vs_integer():
+    doc = parse_prompt(
+        "abstracts:\n  count:\n    description: count\n    type: string\n"
+        "count: ${abstract:count}\n",
+        file="x.yaml",
+    )
+    schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+    errors = validate_schema_type_consistency(doc, schema)
+    assert len(errors) == 1
+    assert errors[0].details["reason"] == "schema_type_mismatch"
+
+
+def test_schema_type_consistency_flags_list_vs_object():
+    doc = parse_prompt(
+        "abstracts:\n  payload:\n    description: payload\n    type: list\n"
+        "payload: ${abstract:payload}\n",
+        file="x.yaml",
+    )
+    schema = {"type": "object", "properties": {"payload": {"type": "object"}}}
+    errors = validate_schema_type_consistency(doc, schema)
+    assert len(errors) == 1
+    assert errors[0].details["reason"] == "schema_type_mismatch"
+
+
+def test_schema_type_consistency_silent_when_union_overlaps_annotation():
+    doc = parse_prompt(
+        "abstracts:\n  who:\n    description: who\n    type: string\n"
+        "who: ${abstract:who}\n",
+        file="x.yaml",
+    )
+    schema = {"type": "object", "properties": {"who": {"type": ["string", "null"]}}}
+    assert validate_schema_type_consistency(doc, schema) == []
+
+
+def test_schema_type_consistency_flags_when_union_excludes_annotation():
+    doc = parse_prompt(
+        "abstracts:\n  count:\n    description: count\n    type: string\n"
+        "count: ${abstract:count}\n",
+        file="x.yaml",
+    )
+    schema = {"type": "object", "properties": {"count": {"type": ["integer", "null"]}}}
     errors = validate_schema_type_consistency(doc, schema)
     assert len(errors) == 1
     assert errors[0].details["reason"] == "schema_type_mismatch"

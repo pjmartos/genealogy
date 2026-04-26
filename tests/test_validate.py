@@ -759,6 +759,54 @@ class TestAbstractPlaceholders:
         assert entry["path"] == "here"
         assert entry["document"] == 2
 
+    def test_validate_flags_string_annotation_against_integer_schema(self, tmp_path):
+        uri = _schema(tmp_path, props={"count": {"type": "integer"}})
+        _write(
+            tmp_path / "p.yaml",
+            f'$schema: "{uri}"\n'
+            f'abstracts:\n  count:\n    description: a count\n    type: string\n'
+            f'count: ${{abstract:count}}\n',
+        )
+        cap = _Capture()
+        code = run(["--output", "json", "validate", str(tmp_path / "p.yaml")],
+                    stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_SCHEMA, cap.out.getvalue() + cap.err.getvalue()
+        errs = json.loads(cap.out.getvalue())["error"]["details"]["errors"]
+        reasons = {e["details"].get("reason") for e in errs}
+        assert "schema_type_mismatch" in reasons, errs
+
+
+    def test_validate_flags_list_annotation_against_object_schema(self, tmp_path):
+        uri = _schema(tmp_path, props={"payload": {"type": "object"}})
+        _write(
+            tmp_path / "p.yaml",
+            f'$schema: "{uri}"\n'
+            f'abstracts:\n  payload:\n    description: payload\n    type: list\n'
+            f'payload:\n  - ${{abstract:payload}}\n',
+        )
+        cap = _Capture()
+        code = run(["--output", "json", "validate", str(tmp_path / "p.yaml")],
+                    stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_SCHEMA, cap.out.getvalue() + cap.err.getvalue()
+        errs = json.loads(cap.out.getvalue())["error"]["details"]["errors"]
+        reasons = {e["details"].get("reason") for e in errs}
+        assert "schema_type_mismatch" in reasons, errs
+
+
+    def test_validate_silent_when_string_annotation_matches_string_or_null_union(self, tmp_path):
+        uri = _schema(tmp_path, props={"who": {"type": ["string", "null"]}})
+        _write(
+            tmp_path / "p.yaml",
+            f'$schema: "{uri}"\n'
+            f'abstracts:\n  who:\n    description: who\n    type: string\n'
+            f'who: ${{abstract:who}}\n',
+        )
+        cap = _Capture()
+        code = run(["--output", "json", "validate", str(tmp_path / "p.yaml")],
+                    stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+
+
     def test_validate_surfaces_resolver_errors_without_schema(self, tmp_path):
         _write(tmp_path / "a.yaml", 'ancestors:\n  - "./missing.yaml"\n')
         cap = _Capture()
