@@ -198,6 +198,17 @@ def _flatten_all(nodes: dict[str, _ResourceNode]) -> dict[str, str]:
     return memo
 
 
+def _is_under_cache(file_path: Path, session) -> bool:
+    cache_root = getattr(getattr(session, "cache", None), "root", None)
+    if cache_root is None:
+        return False
+    try:
+        Path(file_path).resolve().relative_to(Path(cache_root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def build_resource_binding(graph, session) -> ResourceBinding:
     binding = ResourceBinding()
     nodes: dict[str, _ResourceNode] = {}
@@ -264,7 +275,9 @@ def build_resource_binding(graph, session) -> ResourceBinding:
                 unique_children.append(c)
                 unique_seen.add(c)
         binding.resource_children[coord.canonical] = unique_children
-        binding.resource_files[coord.canonical] = str(file_path)
+        binding.resource_files[coord.canonical] = (
+            coord.canonical if _is_under_cache(file_path, session) else str(file_path)
+        )
 
     _detect_cycles(nodes)
     binding.flat_texts.update(_flatten_all(nodes))

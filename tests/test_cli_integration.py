@@ -552,6 +552,81 @@ def test_tree_registry_coord(tmp_path, npmrc):
         server.stop()
 
 
+def test_tree_registry_resource_node_uses_canonical_file(tmp_path, npmrc):
+    manifest = {
+        "name": "@a/b",
+        "version": "1.0.0",
+        "prompts": [{"id": "p", "path": "prompts/p.yaml", "contentType": "yaml"}],
+        "resources": [{"id": "r", "path": "resources/r.md", "contentType": "markdown"}],
+    }
+    files = {
+        "prompts/p.yaml": b"body: |\n  ${resource:../resources/r.md}\n",
+        "resources/r.md": b"hello\n",
+    }
+    tarballs = {("@a/b", "1.0.0"): _pack(manifest, files)}
+    server = _RegistryServer(tarballs)
+    server.start()
+    try:
+        rc = npmrc({"@a:registry": server.url})
+        cap_a = _Capture()
+        code_a = run([
+            "--npmrc", str(rc),
+            "--cache-dir", str(tmp_path / "cache_a"),
+            "--output", "json",
+            "tree", "@a/b@1.0.0#p",
+        ], stdout=cap_a.out, stderr=cap_a.err)
+        assert code_a == EXIT_OK, cap_a.out.getvalue() + cap_a.err.getvalue()
+
+        cap_b = _Capture()
+        code_b = run([
+            "--npmrc", str(rc),
+            "--cache-dir", str(tmp_path / "cache_b"),
+            "--output", "json",
+            "tree", "@a/b@1.0.0#p",
+        ], stdout=cap_b.out, stderr=cap_b.err)
+        assert code_b == EXIT_OK, cap_b.out.getvalue() + cap_b.err.getvalue()
+
+        out_a = cap_a.out.getvalue()
+        out_b = cap_b.out.getvalue()
+        assert out_a == out_b, f"B3 violation: cache_a vs cache_b differ\n--a--\n{out_a}\n--b--\n{out_b}"
+
+        env = json.loads(out_a)
+        nodes_by_id = {n["id"]: n for n in env["result"]["nodes"]}
+        assert nodes_by_id["@a/b@1.0.0#r"]["file"] == "@a/b@1.0.0#r"
+        assert "cache_a" not in out_a
+        assert "packages" not in out_a
+    finally:
+        server.stop()
+
+
+def test_tree_local_resource_node_keeps_local_file_path(tmp_path):
+    pkg = tmp_path / "pkg"
+    (pkg / "prompts").mkdir(parents=True)
+    (pkg / "resources").mkdir(parents=True)
+    (pkg / "package.json").write_text(json.dumps({
+        "name": "@a/b",
+        "version": "1.0.0",
+        "prompts": [{"id": "p", "path": "prompts/p.yaml", "contentType": "yaml"}],
+        "resources": [{"id": "r", "path": "resources/r.md", "contentType": "markdown"}],
+    }), encoding="utf-8")
+    (pkg / "prompts" / "p.yaml").write_text(
+        "body: |\n  ${resource:../resources/r.md}\n", encoding="utf-8"
+    )
+    res_path = pkg / "resources" / "r.md"
+    res_path.write_bytes(b"hello\n")
+
+    cap = _Capture()
+    code = run([
+        "--cache-dir", str(tmp_path / "cache"),
+        "--output", "json",
+        "tree", str(pkg / "prompts" / "p.yaml"),
+    ], stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+    env = json.loads(cap.out.getvalue())
+    nodes_by_id = {n["id"]: n for n in env["result"]["nodes"]}
+    assert nodes_by_id["@a/b@1.0.0#r"]["file"] == str(res_path)
+
+
 def test_describe_missing_target_usage_error(tmp_path):
     cap = _Capture()
     code = run(["describe"], stdout=cap.out, stderr=cap.err)
