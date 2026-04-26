@@ -298,7 +298,7 @@ def _validate_json_file(
 
     errors: list[PromptCliError] = list(pipe.abstract_errors)
     errors.extend(pipe.placeholder_errors)
-    abstracts_out = _abstracts_payload(file_str, pipe.abstracts)
+    abstracts_out = _abstracts_payload(file_str, pipe.abstracts, pipe.annotations)
     if not has_schema:
         return 1, errors, abstracts_out
     schema_uri = resolve_schema_uri(raw_uri, file_str)

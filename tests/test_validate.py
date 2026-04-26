@@ -720,6 +720,27 @@ class TestAbstractPlaceholders:
         assert payload["abstracts_found"] == 1
         assert payload["abstracts"][0]["path"] == "foo"
 
+    def test_validate_json_payload_includes_annotation(self, tmp_path):
+        _write(
+            tmp_path / "a.json",
+            json.dumps({
+                "abstracts": {
+                    "greeting": {"description": "opening line", "type": "string"},
+                },
+                "name": "${abstract:greeting}",
+            }),
+        )
+        cap = _Capture()
+        code = run(["--output", "json", "validate", str(tmp_path / "a.json")],
+                    stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+        payload = json.loads(cap.out.getvalue())["result"]
+        entry = payload["abstracts"][0]
+        assert entry["annotation"] == {
+            "description": "opening line",
+            "type": "string",
+        }, entry
+
     def test_validate_multi_doc_abstracts_mixed_schema(self, tmp_path):
         uri = _schema(tmp_path, props={"x": {"type": "integer"}})
         _write(
