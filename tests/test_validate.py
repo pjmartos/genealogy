@@ -80,6 +80,19 @@ class TestSingleYaml:
         assert code == EXIT_SCHEMA
         assert len(json.loads(cap.out.getvalue())["error"]["details"]["errors"]) >= 2
 
+    def test_non_mapping_top_level_skipped(self, tmp_path):
+        # Parallel to the JSON case: a YAML file whose top-level is not a
+        # mapping has no $schema and must be silently skipped. Pinned here
+        # so the JSON and YAML paths cannot diverge again.
+        _write(tmp_path / "arr.yaml", "- 1\n- 2\n- 3\n")
+        cap = _Capture()
+        code = run(["--output", "json", "validate", str(tmp_path / "arr.yaml")],
+                    stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+        result = json.loads(cap.out.getvalue())["result"]
+        assert result["files_checked"] == 1
+        assert result["violations_found"] == 0
+
     def test_no_schema_skipped(self, tmp_path):
         _write(tmp_path / "a.yaml", "name: hello\n")
         cap = _Capture()
@@ -171,6 +184,20 @@ class TestJson:
         code = run(["--output", "json", "validate", str(tmp_path / "a.json")],
                     stdout=cap.out, stderr=cap.err)
         assert code == EXIT_OK
+
+    def test_non_mapping_top_level_skipped(self, tmp_path):
+        # A JSON file whose top level is not a mapping cannot carry $schema,
+        # so it must be silently skipped — matching the YAML behaviour and
+        # PRD's "files without $schema are silently skipped" rule.
+        _write(tmp_path / "arr.json", "[1, 2, 3]")
+        cap = _Capture()
+        code = run(["--output", "json", "validate", str(tmp_path / "arr.json")],
+                    stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+        result = json.loads(cap.out.getvalue())["result"]
+        assert result["files_checked"] == 1
+        assert result["violations_found"] == 0
+        assert result["abstracts_found"] == 0
 
     def test_malformed(self, tmp_path):
         _write(tmp_path / "a.json", "{bad")

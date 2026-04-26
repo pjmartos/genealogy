@@ -268,6 +268,10 @@ def _validate_json_file(
 
     try:
         doc = parse_prompt(text, file=file_str, strict=False, validate_paths=False)
+    except SchemaError as e:
+        if e.details.get("reason") == "not_mapping":
+            return 1, [], []
+        return 1, [e], []
     except PromptCliError as e:
         return 1, [e], []
 
