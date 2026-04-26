@@ -1882,3 +1882,37 @@ def test_validate_payload_includes_annotation(tmp_path):
         "description": "addressee of the greeting",
         "type": "string",
     }
+
+
+def test_validate_abstracts_payload_points_at_declarer_source(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        "$schema: https://json-schema.org/draft/2020-12/schema\n"
+        "abstracts:\n"
+        "  tone:\n"
+        "    description: speaking tone\n"
+        "    type: string\n"
+        "greeting: ${abstract:tone}\n"
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text("ancestors:\n  - ./base.yaml\n")
+
+    cap = _Capture()
+    code = run(["--output", "json", "validate", str(child)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+    payload = json.loads(cap.out.getvalue())["result"]
+    entries = payload["abstracts"]
+    assert len(entries) == 1, entries
+    entry = entries[0]
+    base_real = str(base.resolve())
+    child_real = str(child.resolve())
+    assert entry["path"] == "tone"
+    assert entry["file"] == base_real, (entry, child_real)
+    assert entry["line"] == 6
+    child_text = child.read_text()
+    child_line_count = len(child_text.splitlines())
+    assert entry["line"] <= child_line_count or entry["file"] != child_real, (
+        f"reported (file={entry['file']}, line={entry['line']}) is incoherent "
+        f"with the file's actual length"
+    )

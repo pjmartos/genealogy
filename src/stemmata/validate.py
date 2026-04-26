@@ -140,7 +140,7 @@ def _abstracts_payload(
         loc = a.location if isinstance(a.location, dict) else {}
         path = a.details.get("placeholder")
         entry: dict[str, Any] = {
-            "file": file_str,
+            "file": loc.get("file") or file_str,
             "path": path,
             "line": loc.get("line"),
             "column": loc.get("column"),
