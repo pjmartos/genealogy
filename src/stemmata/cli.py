@@ -761,7 +761,7 @@ def _run_install(args: argparse.Namespace, stdout, stderr) -> int:
 
     cache_root = Path(args.cache_dir) if args.cache_dir else default_cache_dir()
     cache = Cache(root=cache_root)
-    result = run_install(Path(args.path), cache=cache)
+    result = run_install(Path(args.path), cache=cache, refresh=bool(args.refresh))
     payload = {
         "name": result.name,
         "version": result.version,

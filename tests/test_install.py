@@ -72,6 +72,62 @@ def test_install_is_noop_when_already_cached(tmp_path):
     assert env2["result"]["cache_path"] == env1["result"]["cache_path"]
 
 
+def test_install_refresh_re_fetches_already_cached_package(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    _write_valid_package(pkg)
+    cache_dir = tmp_path / "cache"
+
+    cap1 = _Capture()
+    assert run(
+        ["--cache-dir", str(cache_dir), "--output", "json", "install", str(pkg)],
+        stdout=cap1.out, stderr=cap1.err,
+    ) == EXIT_OK
+    assert json.loads(cap1.out.getvalue())["result"]["installed"] is True
+
+    (pkg / "prompts" / "base.yaml").write_bytes(b"body: refreshed\n")
+
+    cap2 = _Capture()
+    assert run(
+        ["--cache-dir", str(cache_dir), "--refresh", "--output", "json",
+         "install", str(pkg)],
+        stdout=cap2.out, stderr=cap2.err,
+    ) == EXIT_OK, cap2.err.getvalue()
+    env2 = json.loads(cap2.out.getvalue())
+    assert env2["result"]["installed"] is True
+
+    cache = Cache(root=cache_dir)
+    installed = cache.package_dir("@acme/pkg", "1.2.3")
+    assert (installed / "prompts" / "base.yaml").read_bytes() == b"body: refreshed\n"
+
+
+def test_install_without_refresh_does_not_overwrite_cached_payload(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    _write_valid_package(pkg)
+    cache_dir = tmp_path / "cache"
+
+    cap1 = _Capture()
+    assert run(
+        ["--cache-dir", str(cache_dir), "--output", "json", "install", str(pkg)],
+        stdout=cap1.out, stderr=cap1.err,
+    ) == EXIT_OK
+
+    (pkg / "prompts" / "base.yaml").write_bytes(b"body: changed_locally\n")
+
+    cap2 = _Capture()
+    assert run(
+        ["--cache-dir", str(cache_dir), "--output", "json", "install", str(pkg)],
+        stdout=cap2.out, stderr=cap2.err,
+    ) == EXIT_OK
+    env2 = json.loads(cap2.out.getvalue())
+    assert env2["result"]["installed"] is False
+
+    cache = Cache(root=cache_dir)
+    installed = cache.package_dir("@acme/pkg", "1.2.3")
+    assert (installed / "prompts" / "base.yaml").read_bytes() == b"body: hello\n"
+
+
 def test_install_defaults_to_current_dir(tmp_path, monkeypatch):
     _write_valid_package(tmp_path, name="@x/here", version="0.0.1")
     cache_dir = tmp_path / "cache"

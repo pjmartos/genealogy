@@ -27,7 +27,7 @@ def _missing_or_empty(value: Any) -> bool:
     return False
 
 
-def run_install(path: Path, *, cache: Cache) -> InstallResult:
+def run_install(path: Path, *, cache: Cache, refresh: bool = False) -> InstallResult:
     base = path.resolve()
     if not base.is_dir():
         raise UsageError(
@@ -83,7 +83,12 @@ def run_install(path: Path, *, cache: Cache) -> InstallResult:
 
     name = data["name"]
     version = data["version"]
-    if isinstance(name, str) and isinstance(version, str) and cache.has_package(name, version):
+    if (
+        not refresh
+        and isinstance(name, str)
+        and isinstance(version, str)
+        and cache.has_package(name, version)
+    ):
         return InstallResult(
             name=name,
             version=version,
@@ -103,10 +108,10 @@ def run_install(path: Path, *, cache: Cache) -> InstallResult:
     tarball_bytes = build_tarball(members)
 
     with cache.lock(manifest.name, manifest.version):
-        if cache.has_package(manifest.name, manifest.version):
+        if cache.has_package(manifest.name, manifest.version) and not refresh:
             installed = False
         else:
-            cache.install_tarball(manifest.name, manifest.version, tarball_bytes)
+            cache.install_tarball(manifest.name, manifest.version, tarball_bytes, force=refresh)
             installed = True
 
     return InstallResult(
