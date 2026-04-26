@@ -1283,6 +1283,45 @@ def test_tree_json_includes_abstracts_per_node(tmp_path):
     assert by_id[child_real]["abstracts"] == []
 
 
+def test_tree_does_not_annotate_descendants_for_inherited_abstract(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        "abstracts:\n"
+        "  tone:\n"
+        "    description: speaking tone\n"
+        "    type: string\n"
+        "greeting: ${abstract:tone}\n"
+    )
+    child = tmp_path / "child.yaml"
+    child.write_text(
+        "ancestors:\n"
+        "  - ./base.yaml\n"
+        "greeting: ${abstract:tone}\n"
+    )
+
+    cap = _Capture()
+    code = run(["--cache-dir", str(tmp_path / "cache"), "tree", str(child)],
+               stdout=cap.out, stderr=cap.err)
+    assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+    out = cap.out.getvalue()
+    base_real = str(base.resolve())
+    child_real = str(child.resolve())
+    base_lines = [ln for ln in out.splitlines() if base_real in ln]
+    child_lines = [ln for ln in out.splitlines() if child_real in ln]
+    assert base_lines and any("[abstracts: tone: string]" in ln for ln in base_lines), out
+    assert child_lines and all("[abstracts:" not in ln for ln in child_lines), out
+
+    cap2 = _Capture()
+    code2 = run(["--output", "json", "--cache-dir", str(tmp_path / "cache"),
+                 "tree", str(child)],
+                stdout=cap2.out, stderr=cap2.err)
+    assert code2 == EXIT_OK, cap2.out.getvalue() + cap2.err.getvalue()
+    env = json.loads(cap2.out.getvalue())
+    by_id = {n["id"]: n for n in env["result"]["nodes"]}
+    assert sorted(e["path"] for e in by_id[base_real]["abstracts"]) == ["tone"]
+    assert by_id[child_real]["abstracts"] == []
+
+
 def test_describe_lists_declared_and_inherited_abstracts(tmp_path, npmrc):
     # Package with a base prompt that declares abstracts and a child prompt
     # that fills some but not all.

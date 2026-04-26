@@ -481,27 +481,15 @@ def _label_for(canonical: str, kind: str) -> str:
 
 
 def _prompt_abstracts(graph) -> dict[str, list[dict[str, Any]]]:
-    annotations_by_path: dict[str, AbstractAnnotation] = {}
-    for nid in graph.nodes:
-        for path, ann in graph.nodes[nid].doc.abstracts.items():
-            annotations_by_path[path] = ann
-
     result: dict[str, list[dict[str, Any]]] = {}
     for nid in graph.nodes:
-        refs = scan_abstract_references(
-            graph.nodes[nid].doc.namespace,
-            file_fallback=graph.nodes[nid].file,
-        )
-        paths = sorted({r.path for r in refs})
-        if not paths:
+        declared = graph.nodes[nid].doc.abstracts
+        if not declared:
             continue
-        entries: list[dict[str, Any]] = []
-        for path in paths:
-            entry: dict[str, Any] = {"path": path}
-            ann = annotations_by_path.get(path)
-            if ann is not None:
-                entry["annotation"] = _annotation_payload(ann)
-            entries.append(entry)
+        entries: list[dict[str, Any]] = [
+            {"path": path, "annotation": _annotation_payload(declared[path])}
+            for path in sorted(declared)
+        ]
         result[nid.canonical] = entries
     return result
 
