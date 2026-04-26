@@ -878,6 +878,7 @@ def _run_validate(args: argparse.Namespace, stdout, stderr) -> int:
     npmrc_path = Path(args.npmrc) if args.npmrc else None
     config = load_npmrc(npmrc_path)
     http_timeout = _parse_duration(args.http_timeout)
+    overall_timeout = _parse_duration(args.timeout)
 
     def session_factory():
         from stemmata.resolver import Session
@@ -894,7 +895,19 @@ def _run_validate(args: argparse.Namespace, stdout, stderr) -> int:
         offline=args.offline, refresh=args.refresh,
         http_timeout=http_timeout, cache_root=cache_root, stderr=stderr,
     )
-    payload = run_validate(args.target, session_factory, schema_opts)
+
+    deadline_handler_installed = False
+    if overall_timeout > 0 and hasattr(signal, "SIGALRM"):
+        def _timeout(_signum, _frame):
+            raise TimeoutError("overall wall-clock timeout exceeded")
+        signal.signal(signal.SIGALRM, _timeout)
+        signal.setitimer(signal.ITIMER_REAL, overall_timeout)
+        deadline_handler_installed = True
+    try:
+        payload = run_validate(args.target, session_factory, schema_opts)
+    finally:
+        if deadline_handler_installed:
+            signal.setitimer(signal.ITIMER_REAL, 0)
     env = success("validate", payload)
     out_mode = args.output or "yaml"
     if out_mode == "text":

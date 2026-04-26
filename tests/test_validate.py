@@ -101,6 +101,34 @@ class TestSingleYaml:
         assert code == EXIT_OK
 
 
+# -- overall wall-clock timeout ---------------------------------------------
+
+class TestTimeout:
+    def test_overall_timeout_arms_sigalrm(self, monkeypatch, tmp_path):
+        import signal as sm
+        calls: list = []
+        if not hasattr(sm, "SIGALRM"):
+            monkeypatch.setattr(sm, "SIGALRM", 14, raising=False)
+        if not hasattr(sm, "ITIMER_REAL"):
+            monkeypatch.setattr(sm, "ITIMER_REAL", 0, raising=False)
+        monkeypatch.setattr(sm, "setitimer",
+                            lambda which, value: calls.append(("setitimer", which, value)),
+                            raising=False)
+        monkeypatch.setattr(sm, "signal",
+                            lambda sig, handler: calls.append(("signal", sig, handler)),
+                            raising=False)
+        _write(tmp_path / "a.yaml", "name: hello\n")
+        cap = _Capture()
+        code = run(["validate", "--timeout", "30s", str(tmp_path / "a.yaml")],
+                   stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+        arm = [c for c in calls if c[0] == "setitimer" and c[2] != 0]
+        assert arm, calls
+        assert arm[0][2] == 30.0
+        disarm = [c for c in calls if c[0] == "setitimer" and c[2] == 0]
+        assert disarm, calls
+
+
 # -- ancestors ---------------------------------------------------------------
 
 class TestAncestors:
