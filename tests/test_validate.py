@@ -153,6 +153,47 @@ class TestAncestors:
                     stdout=cap.out, stderr=cap.err)
         assert code == EXIT_SCHEMA
 
+    def test_inherited_value_violation_reports_declarer_file_and_line(self, tmp_path):
+        base = _write(
+            tmp_path / "base.yaml",
+            'name: hello\n'
+            'age: "wrong-type"\n',
+        )
+        uri = _schema(tmp_path, props={"age": {"type": "integer"}})
+        child = _write(
+            tmp_path / "child.yaml",
+            f'$schema: "{uri}"\nancestors:\n  - "./base.yaml"\n',
+        )
+        cap = _Capture()
+        code = run(["--output", "json", "validate", str(child)],
+                    stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_SCHEMA, cap.out.getvalue() + cap.err.getvalue()
+        errs = json.loads(cap.out.getvalue())["error"]["details"]["errors"]
+        loc = errs[0]["location"]
+        assert loc["file"] == str(base), loc
+        assert loc["line"] == 2, loc
+
+    def test_multi_doc_inherited_value_violation_reports_declarer(self, tmp_path):
+        base = _write(
+            tmp_path / "base.yaml",
+            'name: hello\n'
+            'age: "wrong-type"\n',
+        )
+        uri = _schema(tmp_path, props={"age": {"type": "integer"}})
+        m = _write(
+            tmp_path / "m.yaml",
+            f'$schema: "{uri}"\nname: a\nage: 1\n'
+            f'---\n$schema: "{uri}"\nancestors:\n  - "./base.yaml"\n',
+        )
+        cap = _Capture()
+        code = run(["--output", "json", "validate", str(m)],
+                    stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_SCHEMA, cap.out.getvalue() + cap.err.getvalue()
+        errs = json.loads(cap.out.getvalue())["error"]["details"]["errors"]
+        inherited = [e for e in errs if e["location"].get("file", "").endswith("base.yaml")]
+        assert inherited, errs
+        assert inherited[0]["location"]["line"] == 2, inherited[0]
+
 
 # -- multi-document YAML -----------------------------------------------------
 

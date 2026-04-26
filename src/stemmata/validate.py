@@ -78,7 +78,7 @@ def _resolve_pipeline(graph, session, schema_opts: SchemaCheckOptions) -> _Pipel
     layers = [Layer(canonical_id=nid.canonical, data=graph.nodes[nid].doc.namespace)
               for nid in order]
     root_file = graph.nodes[graph.root_id].file
-    position_ns = graph.nodes[graph.root_id].doc.namespace
+    position_ns = merged
 
     abstract_errors: list[PromptCliError] = list(validate_abstract_coupling(graph))
     for nid in graph.nodes:
@@ -250,9 +250,13 @@ def _validate_yaml_file(
                 _tag_document(e, doc_idx)
             all_errors.extend(fetch_errors)
             continue
+        combined_position_ns = dict(position_ns)
+        for k, v in (pipe.position_ns or {}).items():
+            if k not in combined_position_ns:
+                combined_position_ns[k] = v
         errs = validate_against_schema(
             pipe.resolved, schema_uri, file=file_str, opts=schema_opts,
-            position_instance=position_ns,
+            position_instance=combined_position_ns,
         )
         for e in errs:
             _tag_document(e, doc_idx)

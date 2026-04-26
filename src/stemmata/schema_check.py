@@ -138,15 +138,12 @@ def fetch_schema_with_errors(
         )]
 
 
-def _lookup_line(instance: Any, path_parts: list[str | int]) -> int | None:
-    """Walk *instance* along *path_parts* and return the source line number.
-
-    String scalars carry ``_pcli_line`` from the YAML loader.  For non-string
-    scalars (int, bool, etc.) we fall back to the YAML key's line, since dict
-    keys are also ``_ScalarStr`` in YAML-loaded trees.
-    """
+def _lookup_position(
+    instance: Any, path_parts: list[str | int],
+) -> tuple[str | None, int | None]:
     cur: Any = instance
     last_key_line: int | None = None
+    last_key_file: str | None = None
     for segment in path_parts:
         if isinstance(cur, dict):
             for k in cur:
@@ -154,16 +151,25 @@ def _lookup_line(instance: Any, path_parts: list[str | int]) -> int | None:
                     kl = getattr(k, "_pcli_line", None)
                     if kl is not None:
                         last_key_line = kl
+                    kf = getattr(k, "_pcli_file", None)
+                    if kf is not None:
+                        last_key_file = kf
                     break
             if segment in cur:
                 cur = cur[segment]
             else:
-                return last_key_line
+                return last_key_file, last_key_line
         elif isinstance(cur, list) and isinstance(segment, int) and 0 <= segment < len(cur):
             cur = cur[segment]
         else:
-            return last_key_line
-    return getattr(cur, "_pcli_line", None) or last_key_line
+            return last_key_file, last_key_line
+    line = getattr(cur, "_pcli_line", None) or last_key_line
+    file = getattr(cur, "_pcli_file", None) or last_key_file
+    return file, line
+
+
+def _lookup_line(instance: Any, path_parts: list[str | int]) -> int | None:
+    return _lookup_position(instance, path_parts)[1]
 
 
 def _json_key_line(text: str, dotted_field: str) -> int | None:
@@ -213,10 +219,10 @@ def validate_against_schema(
     errors: list[PromptCliError] = []
     for verr in sorted(validator.iter_errors(instance), key=lambda e: list(e.absolute_path)):
         path = ".".join(str(p) for p in verr.absolute_path) or "<root>"
-        line = _lookup_line(pos_src, list(verr.absolute_path))
+        src_file, line = _lookup_position(pos_src, list(verr.absolute_path))
         errors.append(SchemaError(
             f"$schema validation failed at {path}: {verr.message}",
-            file=file,
+            file=src_file or file,
             line=line,
             field_name=path,
             reason="schema_validation_failed",
