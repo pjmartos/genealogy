@@ -129,6 +129,24 @@ class TestAncestors:
 # -- multi-document YAML -----------------------------------------------------
 
 class TestMultiDoc:
+    def test_non_mapping_subdoc_silently_skipped(self, tmp_path):
+        _write(tmp_path / "x.yaml", "name: hello\n---\n")
+        cap = _Capture()
+        code = run(["--output", "json", "validate", str(tmp_path / "x.yaml")],
+                    stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+        result = json.loads(cap.out.getvalue())["result"]
+        assert result["violations_found"] == 0
+
+    def test_non_mapping_subdoc_does_not_block_valid_subdocs(self, tmp_path):
+        uri = _schema(tmp_path, props={"x": {"type": "integer"}}, required=["x"])
+        _write(tmp_path / "m.yaml",
+               f'- 1\n- 2\n---\n$schema: "{uri}"\nx: 42\n')
+        cap = _Capture()
+        code = run(["--output", "json", "validate", str(tmp_path / "m.yaml")],
+                    stdout=cap.out, stderr=cap.err)
+        assert code == EXIT_OK, cap.out.getvalue() + cap.err.getvalue()
+
     def test_two_valid_docs(self, tmp_path):
         uri = _schema(tmp_path, props={"x": {"type": "integer"}})
         _write(tmp_path / "m.yaml",

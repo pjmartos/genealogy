@@ -204,10 +204,6 @@ def _validate_yaml_file(
     all_abstracts: list[dict[str, Any]] = []
     for doc_idx, (data, start_line) in enumerate(docs, 1):
         if not isinstance(data, dict):
-            all_errors.append(SchemaError(
-                f"{file_str} document {doc_idx} (line {start_line}) must be a YAML mapping",
-                file=file_str, line=start_line, field_name="<root>",
-                reason="not_mapping"))
             continue
         raw_uri = data.get("$schema")
         has_schema = isinstance(raw_uri, str) and bool(raw_uri)
